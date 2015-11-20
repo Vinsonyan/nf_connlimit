@@ -302,9 +302,11 @@ nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
+#if 0
 	s64 cur_time = 0;
 	s64 diff = 0;
 	s64 base = 1000 * 1000 ;
+#endif
 	ip_nclimit_t *iplimit = NULL;
 	
 	do {
