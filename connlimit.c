@@ -44,7 +44,11 @@ DEFINE_MUTEX(class_lock);
 #define USE_MODULE
 #endif
 
-#define BRUST	5
+#ifndef CONNLIMIT_DEBUG
+#define CONNLIMIT_DEBUG
+#endif
+
+#define BRUST	HZ
 
 #define MAX_CPJ (0xFFFFFFFF / (HZ*60*60*24))
 
@@ -196,7 +200,7 @@ static int connlimit_construct_item(connlimit_request_t *request)
 	cfg->rs.credit_cap = user2credits(cfg->avgs * BRUST);
 	cfg->rs.cost = user2credits(cfg->avgs);
 
-#ifdef DEBUG
+#ifdef CONNLIMIT_DEBUG
 	cfg->log = 1;
 #endif
 

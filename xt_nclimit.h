@@ -20,13 +20,27 @@ enum nclimit_match_state {
 	NCLIMIT_MSM_DONE,
 };
 
+enum nclimit_log {
+	POLICY_LOG = 0,
+	PERIP_LOG,
+};
+
 /* nclimit match struct */
 typedef struct ip_nclimit {
 	struct hlist_node hnode;
+	
+	/* source IP */
 	union nf_inet_addr ip;
+
+	/* connlimit information */
 	rate_unit_t r;
+
+	/* timeout */
 	unsigned long expires;
 	struct rcu_head rcu;
+
+	/* For pring log */
+	unsigned long log_prev, log_count;
 	
 } ip_nclimit_t;
 
@@ -49,6 +63,11 @@ typedef struct xt_nclimit_htable {
 	int 		hotdrop;
 	spinlock_t	lock;
 	struct timer_list timer; 	/* timer for gc */
+	
+	/* For print log */
+	u_int64_t	log_prev_timer;
+	u_int64_t	curr_rate;
+	u_int64_t	log_prev, log_count;
 	
 } xt_nclimit_htable_t;
 

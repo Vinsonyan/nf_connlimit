@@ -12,5 +12,5 @@ default:
 	@echo "Compile modules...."
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 clean:
-	find ./ -name '*.o' -o -name '*.ko' -o -name '*.mod.c' -o -name '*.order' -o -name '*symvers' -o -name '.*mod*' -o -name '.*o*' -o -name '.*ko*' | xargs rm -rf  
+	find ./ -name '*.o' -o -name '*.ko' -o -name '*.mod.c' -o -name '*.order' -o -name '*symvers' -o -name '.*mod*' -o -name '.*o*' -o -name '.*ko*' -o -name '*.swp' | xargs rm -rf  
 
