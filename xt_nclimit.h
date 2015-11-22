@@ -10,6 +10,8 @@
 #define RULEID_NAME_SIZE 128
 #endif  /* RULEID_NAME_SIZE */
 
+#define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (unsigned int)__tmp; }) : 0)
+
 /* nclimit match state machine */
 enum nclimit_match_state {
 	NCLIMIT_MSM_INIT	= 0,
@@ -24,6 +26,11 @@ enum nclimit_log {
 	POLICY_LOG = 0,
 	PERIP_LOG,
 };
+
+typedef nclimit_stat {
+	u_int64_t       diff;
+	u_int64_t       log_prev_timer;	
+} nclimit_stat_t;
 
 /* nclimit match struct */
 typedef struct ip_nclimit {
@@ -40,7 +47,7 @@ typedef struct ip_nclimit {
 	struct rcu_head rcu;
 
 	/* For pring log */
-	unsigned long log_prev, log_count;
+	nclimit_stat_t	stat;
 	
 } ip_nclimit_t;
 
@@ -65,9 +72,7 @@ typedef struct xt_nclimit_htable {
 	struct timer_list timer; 	/* timer for gc */
 	
 	/* For print log */
-	u_int64_t	log_prev_timer;
-	u_int64_t	curr_rate;
-	u_int64_t	log_prev, log_count;
+	nclimit_stat_t stat;
 	
 } xt_nclimit_htable_t;
 
