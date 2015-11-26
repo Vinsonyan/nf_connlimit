@@ -86,38 +86,34 @@ nclimit_print_log6(union nf_inet_addr addrsrc, const char *tbuff, unsigned long 
 static void
 nclimit_print_log(xt_nclimit_htable_t *ht, ip_nclimit_t *iplimit, u_int8_t flags)
 {
-	unsigned long diff=0;
 	unsigned long current_rate = 0;
 	char tbuff[64] = {0};
-	return ;
 	if (!ht->log || (flags == PERIP_LOG && NULL == iplimit)) 
+		return ;
+
+	if (!net_ratelimit())
 		return ;
 
 	switch (flags) {
 	case POLICY_LOG:
-		current_rate = SAFEDIV(HZ, ht->diff);
+		current_rate = SAFEDIV(HZ, ht->stat.diff);
 		break;
 	case PERIP_LOG:
-		current_rate = SAFEDIV(HZ, iplimit->diff);
+		current_rate = SAFEDIV(HZ, iplimit->stat.diff);
 		break;
 
 	default:
 		printk("%s nclimit print log Error!\n",__func__);
 	}
 
+	if (0 == current_rate)
+		return ;
+
 	connlimit_get_time(tbuff);
 	if (NFPROTO_IPV4 == ht->family)
 		nclimit_print_log4(ht->ip, tbuff, current_rate);
 	else if (NFPROTO_IPV6 == ht->family)
 		nclimit_print_log6(ht->ip, tbuff, current_rate);
-
-	if (POLICY_LOG == flags) {
-		ht->log_prev = ht->now;
-		ht->log_count = 0;
-	} else if (PERIP_LOG == flags) {
-		iplimit->log_prev = ht->now;
-		iplimit->log_count = 0;
-	}
 
 	return ;
 }
@@ -171,9 +167,6 @@ nclimit_alloc_init(xt_nclimit_htable_t *ht)
 
 	iplimit->expires = jiffies + (20 * HZ);
 	iplimit->ip = ht->ip;
-	iplimit->log_prev = ht->now;
-	iplimit->log_count = 0;
-
 	memcpy(&iplimit->r, &ht->rp, sizeof(iplimit->r));
 
 	hash = connlimit_ip_hash(iplimit->ip, NFPROTO_IPV4);
@@ -204,11 +197,6 @@ static int nclimit_check_perip_limit(xt_nclimit_htable_t *ht, ip_nclimit_t **lim
 		iplimit->r.credit_cap = ht->rp.credit_cap;
 		iplimit->r.cost = ht->rp.cost;
 
-#if 0	
-		/* Initialize perIP log info */
-		iplimit->log_prev = ht->now;
-		iplimit->log_count = 0;
-#endif		
 	} else {
 		/* refresh expires */
 		iplimit->expires = now + (20 * HZ);
@@ -303,7 +291,6 @@ nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 			break;
 		} else {
 			/* calculate current overlimit rate for pring log */
-			
 			ht->stat.diff = ht->now - ht->stat.log_prev_timer;
 			nclimit_print_log(ht,iplimit, POLICY_LOG);
 			ht->stat.log_prev_timer = ht->now;
@@ -337,6 +324,7 @@ nclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 			/* calculate perip overlimit rate for print log */
 			iplimit->stat.diff = ht->now - iplimit->stat.log_prev_timer;
 			nclimit_print_log(ht, iplimit, PERIP_LOG);
+
 			/* Change msm state. */
 			ht->match = false;
 			ht->hotdrop = true;
@@ -502,13 +490,6 @@ static int nclimit_htable_create(struct net *net, xt_nclimit_info_t *info,
 	hinfo->use = 1;
 	hinfo->net = net;
 	hinfo->family = family;
-	/* timer gc for recycle sip. */
-	hinfo->log_prev = jiffies;
-
-	/* current rate of policy for print log. */
-	hinfo->log_count = 0;
-	hinfo->log_prev_timer = 0;
-	hinfo->curr_rate = 0;
 	hinfo->pde = proc_create_data(hinfo->name, 0, 
 			(family == NFPROTO_IPV4) ?
 			nclimit_net->ipt_nclimit : nclimit_net->ip6t_nclimit,

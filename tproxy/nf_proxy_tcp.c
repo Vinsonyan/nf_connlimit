@@ -38,6 +38,8 @@
 #include <linux/netfilter_bridge/ebt_ip.h>
 #include <linux/utsname.h>
 
+#include "../../bridge/br_private.h"
+//#include <linux/br_private.h>
 #include "nf_proxy_tcp.h"
 
 #ifdef CONFIG_UTM
@@ -55,7 +57,7 @@ tproxy_port_set_t *port_sets = NULL;
 #endif	/* NF_PROXY_IPTABLES */
 static struct nf_conn *tmp_ct = NULL;
 
-static int debug_config = 1;
+static int debug_config = 0;
 static int debug_pre = 0;
 static int debug_output = 0;
 static int debug_seq = 0;
@@ -94,7 +96,6 @@ static inline void tproxy_set_skb_mark(struct sk_buff *skb, int mark)
 	skb->mark = mark; return ;
 }
 
-#ifdef CONFIG_NF_CONNTRACK_ZONES 
 static inline int tproxy_set_connid(struct sk_buff *pskb, unsigned int hooknum)
 {
 	int action = NF_ACCEPT;
@@ -109,12 +110,7 @@ static inline int tproxy_set_connid(struct sk_buff *pskb, unsigned int hooknum)
 out:
 	return action;
 }
-#else
-static inline int tproxy_set_connid(struct sk_buff *pskb, unsigned int hooknum) 
-{
-	return NF_ACCEPT;
-}
-#endif	/* CONFIG_NF_CONNTRACK_ZONES */
+
 static unsigned int nf_tproxy_localout(unsigned int hooknum,
 				      struct sk_buff *skb,
 				      const struct net_device *in,
@@ -122,10 +118,16 @@ static unsigned int nf_tproxy_localout(unsigned int hooknum,
 				      int (*okfn)(struct sk_buff *))
 {
 	struct sock *sk = skb->sk;
+	bool transparent = true;
 
 	if (!sk) goto out;
 
-	if (!(inet_sk(sk)->transparent)) 
+	transparent = ((sk->sk_state != TCP_TIME_WAIT &&
+				inet_sk(sk)->transparent) ||
+			(sk->sk_state == TCP_TIME_WAIT &&
+			 inet_twsk(sk)->tw_transparent));
+
+	if (!transparent)
 		goto out;
 
 	tproxy_print_tuple(skb, debug_output, "nf_tproxy_localout");
@@ -165,6 +167,38 @@ out:
 	return ret;
 }
 
+static inline struct net_device *tproxy_bridge_parent(const struct net_device *dev)
+{
+	struct net_bridge_port *port = rcu_dereference(dev->br_port);
+
+	return port ? port->br->dev : NULL;
+}
+
+static inline struct nf_bridge_info *tproxy_nf_bridge_alloc(struct sk_buff *skb)
+{
+	skb->nf_bridge = kzalloc(sizeof(struct nf_bridge_info), GFP_ATOMIC);
+	if (likely(skb->nf_bridge))
+		atomic_set(&(skb->nf_bridge->use), 1);
+
+	return skb->nf_bridge;
+}
+
+static struct net_device *tproxy_setup_broute(struct sk_buff *skb)
+{
+	struct nf_bridge_info *nf_bridge = skb->nf_bridge;
+
+	if (skb->pkt_type == PACKET_OTHERHOST) {
+		skb->pkt_type = PACKET_HOST;
+		nf_bridge->mask |= BRNF_PKT_TYPE;
+	}
+
+	nf_bridge->mask |= BRNF_BRIDGED;
+	nf_bridge->physindev = skb->dev;
+	skb->dev = tproxy_bridge_parent(skb->dev);
+
+	return skb->dev;
+}
+
 static unsigned int nf_tproxy_connid_pre(unsigned int hooknum,
 				      struct sk_buff *skb,
 				      const struct net_device *in,
@@ -172,12 +206,32 @@ static unsigned int nf_tproxy_connid_pre(unsigned int hooknum,
 				      int (*okfn)(struct sk_buff *))
 {
 	int err;
+#ifdef NF_PROXY_BRIDGE
+	struct net_bridge_port *port;
+#endif	/* NF_PROXY_BRIDGE */
 
 	err = tproxy_lookup_conntrack(skb);
 	if (err != 0) {
 		err = -1;
 		goto out;
 	}
+
+#ifdef NF_PROXY_BRIDGE
+	if (NULL != (port = rcu_dereference(skb->dev->br_port))) {
+		nf_bridge_put(skb->nf_bridge);
+		if (!tproxy_nf_bridge_alloc(skb)) {
+			tproxy_print(debug_pre, "BUG[%s]: bridge alloc nf_bridge failed.\n", __func__);
+			return NF_ACCEPT;
+		}
+	
+		if(!tproxy_setup_broute(skb)) {
+			tproxy_print(debug_pre, "BUG[%s]: tproxy setup broute failed.\n", __func__);
+			return NF_ACCEPT;
+		}
+
+		tproxy_print(debug_pre, "%s dev[%s].\n", __func__, skb->dev->name);
+	} 
+#endif	/* NF_PROXY_BRIDGE */
 
 	tproxy_print_tuple(skb, debug_pre, "nf_tproxy_connid_pre");
 	return tproxy_set_connid(skb, hooknum);
@@ -210,11 +264,11 @@ static unsigned int nf_tproxy_route_pre(unsigned int hooknum,
 
 	tproxy_set_skb_mark(skb, SKB_PROUTE_MARK);
 out:
+	tproxy_print(debug_pre, "%s mark_set[%u].\n",__func__, skb->mark);
 	return NF_ACCEPT;
 }
 
 #ifdef NF_PROXY_IPTABLES
-#error "Error!!!!"
 static int tproxy_lookup_port(u_int16_t port, struct sk_buff *skb)
 {
 	int ret = 0, i = 0;
@@ -415,7 +469,7 @@ ebt_conntrack_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	struct iphdr _iph;
 	const struct tcpudphdr *pptr;
 	struct tcpudphdr _ports;
-	const struct nf_conntrack_tuple_hash *h;
+	const struct nf_conntrack_tuple_hash *h = NULL;
 	struct nf_conntrack_tuple tuple;
 	bool match = true;
 	const struct ebt_connid_info *info = par->matchinfo;
@@ -463,6 +517,7 @@ ebt_conntrack_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	}
 	
 out:
+	if (h) nf_ct_put(nf_ct_tuplehash_to_ctrack(h));
 	tproxy_print(debug_br, "[%s:] match %u.\n",__func__, match);
 	return match;
 }

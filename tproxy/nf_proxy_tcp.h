@@ -14,6 +14,10 @@
 #define RING_SIZE	1024
 #define TPROXY_PROC_PATH "/proc/sys/leadsec/tproxy"
 
+#ifndef NF_PROXY_BRIDGE
+#define NF_PROXY_BRIDGE
+#endif	/* NF_PROXY_BRIDGE */
+
 /* ebtable matchs */
 struct ebt_connid_info {
         unsigned short zone_id;

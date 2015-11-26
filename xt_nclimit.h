@@ -27,7 +27,7 @@ enum nclimit_log {
 	PERIP_LOG,
 };
 
-typedef nclimit_stat {
+typedef struct nclimit_stat {
 	u_int64_t       diff;
 	u_int64_t       log_prev_timer;	
 } nclimit_stat_t;
