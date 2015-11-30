@@ -172,7 +172,7 @@ cclimit_msm_precheck(const struct sk_buff *skb, struct xt_action_param *par)
 	}
 
 	ct = nf_ct_get(skb, &ctinfo);
-	if (!ct || (ct && nf_ct_is_confirmed(ct)))  {
+	if (!ct || (ct && nf_ct_is_confirmed(ct))) {
 		ht->match = -1;
 		goto out;
 	}
@@ -198,7 +198,6 @@ cclimit_msm_prebuild(const struct sk_buff *skb, struct xt_action_param *par)
 	union nf_inet_addr sip = (union nf_inet_addr)ip_hdr(skb)->saddr;
 	u_int32_t hash = connlimit_ip_hash(sip, ht->family);
 
-//	spin_lock_bh(&cclimit_lock); replace ht.lock
 	hlist_for_each_entry(cur, next, &ht->hhead[hash], hnode) {
 		if (nf_inet_addr_cmp(&cur->sip, &sip)) {
 			ip_cclimit = cur;
@@ -220,13 +219,11 @@ cclimit_msm_prebuild(const struct sk_buff *skb, struct xt_action_param *par)
 	}
 	
 out:
-	/* inc count */
 	if (NULL != ip_cclimit) {
 		ht->ip_ptr = ip_cclimit;
 		cclimit_policy_count_get(ht);
 		cclimi_perip_get(ip_cclimit);
 	}
-//	spin_unlock_bh(&cclimit_lock); replace ht.lock
 
 	return (ht->match);
 }
@@ -303,13 +300,11 @@ cclimit_msm_ct_extend(const struct sk_buff *skb, struct xt_action_param *par)
 		}
 	}
 
-	//spin_lock_bh(&cclimit_lock); replace ht.lock
 	cclimit->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
 	cclimit->addr = (unsigned long)ht->self_addr;
 	INIT_HLIST_HEAD(&cclimit_extend->head);
 	hlist_add_head(&cclimit->hnode, &cclimit_extend->head);
 	cclimit_extend->num++;
-	//spin_unlock_bh(&cclimit_lock); replace ht.lock
 	
 	ht->next_state = CCLIMIT_MSM_DONE;
 	return (ht->match);
@@ -362,7 +357,6 @@ static bool cclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	more_allowed = CCLIMIT_MSM_DONE + 1;
 	while (ht->state != CCLIMIT_MSM_DONE && --more_allowed) {
 		ht->next_state = cclimit_state_table[ht->state].next_state;
-		printk("cur_state [%u], next_state[%u].\n", ht->state, ht->next_state);
 
 		match = cclimit_state_table[ht->state].action(skb, par);
 
