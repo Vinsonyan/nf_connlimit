@@ -204,8 +204,6 @@ static int connlimit_construct_item(connlimit_request_t *request)
 	cfg->log = 1;
 #endif
 
-	printk("%u %u %u %u.\n", cfg->limits, cfg->limitp, cfg->avgs, cfg->avgp);
-
 	item = netobj_kzalloc(sizeof(connlimit_item_t), GFP_KERNEL);
 	if (NULL == item) {
 		printk("connlimit: Alloc connlimit_item_t failed.\n");
@@ -217,8 +215,6 @@ static int connlimit_construct_item(connlimit_request_t *request)
 	atomic_set(&item->refcnt, 1);
 	item->cfg = cfg;
 
-	printk("%s %u %u %u %u\n", item->name, item->cfg->limits,item->cfg->limitp, item->cfg->avgs, item->cfg->avgp);
-	
 	hlist_add_head(&item->hnode, &connlimit_list);
 	return ret;
 out:
@@ -331,8 +327,6 @@ static int do_add_connlimit_cmd(void __user *user, int *len)
 		goto out;
 	}
 
-	printk("%s: %s %u %u %u %u.\n",__func__, request.name,request.cfg.limits,request.cfg.limitp,
-					request.cfg.avgs, request.cfg.avgp);
 	ret = connlimit_construct_item(&request);
 	if (0 != ret) {
 		printk("Construct connlimit object failed.\n");
@@ -362,8 +356,6 @@ static int do_modify_connlimit_cmd(void __user *user, int *len)
 		goto out;
 	}
 
-	printk("%s: %s %u %u %u %u.\n",__func__, request.name,request.cfg.limits,request.cfg.limitp,
-					request.cfg.avgs, request.cfg.avgp);
 	ret = connlimit_modify_item(&request);
 	if (0 != ret) {
 		printk("Construct connlimit object failed.\n");

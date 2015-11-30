@@ -137,7 +137,7 @@ cclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	connlimit_cfg_t *cfg = NULL;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
-	xt_cclimit_htable_t *ht = info->kinfo;
+	xt_cclimit_htable_t *ht = info->hinfo;
 
 	rcu_read_lock();
 	cfg = connlimit_get_cfg_rcu(info->obj_addr);
@@ -164,7 +164,7 @@ cclimit_msm_precheck(const struct sk_buff *skb, struct xt_action_param *par)
 	enum ip_conntrack_info ctinfo;
 	//nf_conn_cclimit_t *cclimit_extend = NULL;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
-	xt_cclimit_htable_t *ht = info->kinfo;
+	xt_cclimit_htable_t *ht = info->hinfo;
 
 	if (0 == info->limitp && 0 == info->limits) {
 		ht->match = -1;
@@ -194,7 +194,7 @@ cclimit_msm_prebuild(const struct sk_buff *skb, struct xt_action_param *par)
 	sip_session_count_t *ip_cclimit = NULL, *cur = NULL;
 	struct hlist_node *next = NULL;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
-	xt_cclimit_htable_t *ht = info->kinfo;
+	xt_cclimit_htable_t *ht = info->hinfo;
 	union nf_inet_addr sip = (union nf_inet_addr)ip_hdr(skb)->saddr;
 	u_int32_t hash = connlimit_ip_hash(sip, ht->family);
 
@@ -232,7 +232,7 @@ static int
 cclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
-	xt_cclimit_htable_t *ht = info->kinfo;
+	xt_cclimit_htable_t *ht = info->hinfo;
 
 	if (0 == info->limits)
 		goto out;
@@ -253,7 +253,7 @@ static int
 cclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
-	xt_cclimit_htable_t *ht = info->kinfo;
+	xt_cclimit_htable_t *ht = info->hinfo;
 	sip_session_count_t *ip_cclimit = ht->ip_ptr;
 
 	if (0 == info->limitp ||
@@ -278,7 +278,7 @@ cclimit_msm_ct_extend(const struct sk_buff *skb, struct xt_action_param *par)
 	nf_cclimit_t *cclimit = NULL;	
 	nf_conn_cclimit_t *cclimit_extend = NULL;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
-	xt_cclimit_htable_t *ht = info->kinfo;
+	xt_cclimit_htable_t *ht = info->hinfo;
 
 	/* embedded cclimit conntrack extend to ct. */
 	cclimit = kzalloc(sizeof(nf_cclimit_t), GFP_ATOMIC);
@@ -318,7 +318,7 @@ static int
 cclimit_msm_fint(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_cclimit_info_t *info = (xt_cclimit_info_t*)par->matchinfo;
-	xt_cclimit_htable_t *ht = (xt_cclimit_htable_t *)info->kinfo;	
+	xt_cclimit_htable_t *ht = (xt_cclimit_htable_t *)info->hinfo;	
 
 	if (true == ht->match || NULL == ht->ip_ptr)
 		goto out;
@@ -351,7 +351,7 @@ static bool cclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	int match = true;
 	unsigned more_allowed;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t*)par->matchinfo;
-	xt_cclimit_htable_t *ht = (xt_cclimit_htable_t *)info->kinfo;
+	xt_cclimit_htable_t *ht = (xt_cclimit_htable_t *)info->hinfo;
 
 	spin_lock_bh(&ht->lock);
 	more_allowed = CCLIMIT_MSM_DONE + 1;
@@ -406,7 +406,7 @@ static int cclimit_htable_create(struct net *net, xt_cclimit_info_t *info,
 	hinfo = kzalloc(sizeof(xt_cclimit_htable_t), GFP_ATOMIC);
 	if (hinfo == NULL)
 		return -ENOMEM;
-	info->kinfo = hinfo;
+	info->hinfo = hinfo;
 
 	for (i = 0; i < SIP_HASH_SIZE; i++)
 		INIT_HLIST_HEAD(&hinfo->hhead[i]);
@@ -463,8 +463,8 @@ static int cclimit_mt_check(const struct xt_mtchk_param *par)
 	rcu_read_unlock();
 
 	spin_lock_bh(&cclimit_lock);
-	info->kinfo = cclimit_htable_find_get(net, info->ruleid, par->family);
-	if (NULL == info->kinfo) {
+	info->hinfo = cclimit_htable_find_get(net, info->ruleid, par->family);
+	if (NULL == info->hinfo) {
 		ret = cclimit_htable_create(net, info, par->family);
 		if (0 != ret) {
 			spin_unlock_bh(&cclimit_lock);
@@ -575,7 +575,7 @@ static void cclimit_mt_destroy(const struct xt_mtdtor_param *par)
 
 	connlimit_release_obj(info->obj_addr);
 	spin_lock_bh(&cclimit_lock);
-	cclimit_htable_put(info->kinfo);
+	cclimit_htable_put(info->hinfo);
 	spin_unlock_bh(&cclimit_lock);
 	
 	//nf_ct_l3proto_module_put(par->family);

@@ -33,7 +33,7 @@ typedef struct xt_cclimit_info {
 	unsigned int limitp,limits, inverse,log;
 	unsigned int overlimit;
 	unsigned long obj_addr;
-	struct xt_cclimit_htable *kinfo;
+	struct xt_cclimit_htable *hinfo;
 	
 } xt_cclimit_info_t;
 

@@ -91,6 +91,5 @@ extern void connlimit_release_obj(unsigned long addr);
 extern unsigned int connlimit_ip_hash(union nf_inet_addr u, u_int8_t family);
 extern void connlimit_get_time(char *tbuff);
 
-#endif
 #endif /* __KERNEL__ */
 #endif	/* __CONNLIMIT_H__ */
