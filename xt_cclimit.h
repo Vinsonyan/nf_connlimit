@@ -37,19 +37,19 @@ typedef struct xt_cclimit_info {
 	
 } xt_cclimit_info_t;
 
-typedef struct sip_session_count {
+typedef struct ip_cclimit {
 	struct hlist_node hnode;
 	union nf_inet_addr sip;
 	atomic_t ip_count;
 	atomic_t overlimit;
 
-} sip_session_count_t;
+} ip_cclimit_t;
 
 typedef struct xt_cclimit_htable {
 	struct hlist_head	hhead[SIP_HASH_SIZE];
 	struct hlist_node 	hnode;
 	spinlock_t 		lock;
-	sip_session_count_t 	*ip_ptr;
+	ip_cclimit_t 	*ip_ptr;
 	int 			use;
 	char 			name[RULEID_NAME_SIZE];
 	u8 family;
@@ -66,7 +66,7 @@ typedef struct xt_cclimit_htable {
 } xt_cclimit_htable_t;
 
 /* Conntrack extend struct The structure embedded in the conntrack structure. */
-
+#if 0
 typedef struct nf_cclimit {
         struct hlist_node hnode;       
         union nf_inet_addr ip;
@@ -82,14 +82,15 @@ typedef struct nf_conn_cclimit {
 	unsigned int num;
 	
 } nf_conn_cclimit_t;
+#endif
 
 typedef struct nfct_cclimit {
-	void *data;
+	unsigned long addr;
+//	void *data;
 	union nf_inet_addr ip;
 } nfct_cclimit_t;
 
-/*  */
-static inline struct nf_conn_cclimit *nfct_cclimit(const struct nf_conn *ct)
+static inline nfct_cclimit_t *nfct_cclimit(const struct nf_conn *ct)
 {
 	return nf_ct_ext_find(ct, NF_CT_EXT_CCLIMIT);
 }
