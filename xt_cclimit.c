@@ -139,21 +139,16 @@ cclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
-	rcu_read_lock();
-	cfg = connlimit_get_cfg_rcu(info->obj_addr);
+	info->cfg = connlimit_get_cfg_rcu(info->obj_addr);
 	if (NULL == cfg) {
 		ht->match = -1;
 		goto out;
 	}
 
-	info->limitp = cfg->limitp;
-	info->limits = cfg->limits;
-	ht->log = cfg->log;
 	ht->match = true;
 	ht->hotdrop = false;
 
 out:
-	rcu_read_unlock();
 	return (ht->match);
 }
 
@@ -166,25 +161,19 @@ cclimit_msm_precheck(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
-	if (0 == info->limitp && 0 == info->limits) {
-		ht->match = -1;
+	if (0 == info->cfg->limitp && 0 == info->cfg->limits) 
 		goto out;
-	}
 
 	ct = nf_ct_get(skb, &ctinfo);
-	if (!ct || (ct && nf_ct_is_confirmed(ct))) {
-		ht->match = -1;
+	if (!ct || (ct && nf_ct_is_confirmed(ct))) 
 		goto out;
-	}
-
+	
 	/* If the same packet that firs of session through mutile policy */
-#if 0
-	cclimit_extend = nfct_cclimit(ct);
-	if (cclimit_extend) 
-		ht->next_state = CCLIMIT_MSM_DONE;
-#endif
+	/* do something */
 
+	return (ht->match);
 out:	
+	ht->next_state = CCLIMIT_MSM_DONE;
 	return (ht->match);
 }
 
@@ -234,10 +223,10 @@ cclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
-	if (0 == info->limits)
+	if (0 == info->cfg->limits)
 		goto out;
 
-	if (info->limits < atomic_read(&ht->policy_count)) {
+	if (info->cfg->limits < atomic_read(&ht->policy_count)) {
 		ht->match = false;
 		ht->hotdrop = true;
 		atomic_inc(&ht->overlimit);
@@ -256,11 +245,11 @@ cclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_htable_t *ht = info->hinfo;
 	sip_session_count_t *ip_cclimit = ht->ip_ptr;
 
-	if (0 == info->limitp ||
+	if (0 == info->cfg->limitp ||
 			(ht && NULL == ht->ip_ptr)) 
 		goto out;
 
-	if (info->limitp < atomic_read(&ip_cclimit->ip_count)) {
+	if (info->cfg->limitp < atomic_read(&ip_cclimit->ip_count)) {
 		ht->match = false;
 		ht->hotdrop = true;
 		atomic_inc(&ip_cclimit->overlimit);
@@ -353,6 +342,7 @@ static bool cclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_info_t *info = (xt_cclimit_info_t*)par->matchinfo;
 	xt_cclimit_htable_t *ht = (xt_cclimit_htable_t *)info->hinfo;
 
+	rcu_read_lock();
 	spin_lock_bh(&ht->lock);
 	more_allowed = CCLIMIT_MSM_DONE + 1;
 	while (ht->state != CCLIMIT_MSM_DONE && --more_allowed) {
@@ -372,7 +362,9 @@ static bool cclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 
 	ht->state = CCLIMIT_MSM_INIT;
 	par->hotdrop = ht->hotdrop;
+
 	spin_unlock_bh(&ht->lock);
+	rcu_read_unlock();
 
 	return match;
 }
@@ -436,7 +428,6 @@ static int cclimit_htable_create(struct net *net, xt_cclimit_info_t *info,
 static int cclimit_mt_check(const struct xt_mtchk_param *par)
 {
 	int ret = 0;
-	connlimit_cfg_t *cfg = NULL;
 	xt_cclimit_info_t *info = par->matchinfo;
 	struct net *net = par->net;
 
@@ -450,17 +441,6 @@ static int cclimit_mt_check(const struct xt_mtchk_param *par)
 	info->obj_addr = connlimit_find_obj(info->name);
 	if (0 == info->obj_addr)
 		return -ENOMEM;
-
-	rcu_read_lock();
-	cfg = connlimit_get_cfg_rcu(info->obj_addr);
-	if (NULL == cfg) {
-		rcu_read_unlock();
-		return -ENOMEM;
-	}
-	info->limitp = cfg->limitp;
-	info->limits = cfg->limits;
-	info->log = cfg->log;
-	rcu_read_unlock();
 
 	spin_lock_bh(&cclimit_lock);
 	info->hinfo = cclimit_htable_find_get(net, info->ruleid, par->family);

@@ -118,6 +118,16 @@ nclimit_print_log(xt_nclimit_htable_t *ht, ip_nclimit_t *iplimit, u_int8_t flags
 	return ;
 }
 
+static __inline__  void
+nclimit_update_rateinfo(xt_nclimit_htable_t *ht, connlimit_cfg_t *cfg)
+{
+	rcu_read_lock();
+	memcpy(&ht->rs, &cfg->rs, sizeof(ht->rs) * 2);
+	ht->log = cfg->log;
+	rcu_read_unlock();
+	return ;
+}
+
 static inline void rateinfo_recalc(rate_unit_t *rateinfo, unsigned long now)
 {
 	rateinfo->credit += (now - rateinfo->prev) * CREDITS_PER_JIFFY;
@@ -215,6 +225,28 @@ out:
 	return (ht->match);
 }
 
+#if 0
+static void nclimit_update_htable(xt_nclimit_htable_t *ht)
+{
+	connlimit_cfg_t *cfg = NULL;
+
+	rcu_read_lock();
+
+	cfg = connlimit_get_cfg_rcu(info->obj_addr);
+	if (NULL == cfg || NULL == ht) {
+		ht->match = -1;
+		goto out;
+	}
+
+	
+
+	
+out:		
+	rcu_read_unlock();
+
+}
+#endif
+
 static int 
 nclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 {
@@ -230,19 +262,12 @@ nclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 	}
 
 	if ((ht->rp.cost == cfg->rp.cost) &&
-	     ht->rs.cost == cfg->rs.cost) {
+	    (ht->rs.cost == cfg->rs.cost) &&
+	    (ht->log == cfg->log)) {
 		goto out;
 	}
 
-	ht->rp.credit = cfg->rp.credit;
-	ht->rp.cost = cfg->rp.cost;
-	ht->rp.credit_cap = cfg->rp.credit_cap;
-
-	ht->rs.credit = cfg->rs.credit;
-	ht->rs.cost = cfg->rs.cost;
-	ht->rs.credit_cap = cfg->rs.credit_cap;
-	ht->log = cfg->log;
-
+	nclimit_update_rateinfo(ht, cfg);
 out:
 	ht->match = true;
 	ht->hotdrop = false;
@@ -468,7 +493,7 @@ static void nclimit_htable_gc(unsigned long htlong)
 }
 
 static int nclimit_htable_create(struct net *net, xt_nclimit_info_t *info, 
-		u_int8_t family)
+				 connlimit_cfg_t *cfg, u_int8_t family)
 {
 	struct nclimit_net *nclimit_net = nclimit_pernet(net);
 	xt_nclimit_htable_t *hinfo = NULL;
@@ -484,12 +509,10 @@ static int nclimit_htable_create(struct net *net, xt_nclimit_info_t *info,
 
 	spin_lock_init(&hinfo->lock);
 	strlcpy(hinfo->name, info->pf_name, sizeof(hinfo->name));
-	memcpy(&hinfo->rp, &info->rp, sizeof(hinfo->rp));
-	memcpy(&hinfo->rs, &info->rs, sizeof(hinfo->rs));
-	hinfo->log = info->log;
 	hinfo->use = 1;
 	hinfo->net = net;
 	hinfo->family = family;
+	nclimit_update_rateinfo(hinfo, cfg);
 	hinfo->pde = proc_create_data(hinfo->name, 0, 
 			(family == NFPROTO_IPV4) ?
 			nclimit_net->ipt_nclimit : nclimit_net->ip6t_nclimit,
@@ -532,22 +555,20 @@ static int nclimit_mt_check(const struct xt_mtchk_param *par)
 		rcu_read_unlock();
 		return -ENOMEM;
 	}
-	
-	memcpy(&info->rs, &cfg->rs, sizeof(info->rs));
-	memcpy(&info->rp, &cfg->rp, sizeof(info->rp));
-	info->log = cfg->log;
-	rcu_read_unlock();
 
+	rcu_read_unlock();
 	mutex_lock(&nclimit_mutex);
 	info->hinfo = nclimit_htable_find_get(net, info->pf_name, par->family);
 	if (NULL == info->hinfo) {
-		ret = nclimit_htable_create(net, info, par->family);
+		ret = nclimit_htable_create(net, info,cfg, par->family);
 		if (ret != 0) {
 			mutex_unlock(&nclimit_mutex);
+			rcu_read_lock();
 			return ret;
 		}
 	}
 	mutex_unlock(&nclimit_mutex);
+	rcu_read_lock();
 
 	return 0;
 }

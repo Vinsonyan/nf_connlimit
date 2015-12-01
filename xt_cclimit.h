@@ -30,9 +30,9 @@ typedef struct xt_cclimit_info {
 	char ruleid[RULEID_NAME_SIZE];
 
 	/* Used internally by the kernel */
-	unsigned int limitp,limits, inverse,log;
 	unsigned int overlimit;
 	unsigned long obj_addr;
+	connlimit_cfg_t *cfg;
 	struct xt_cclimit_htable *hinfo;
 	
 } xt_cclimit_info_t;
@@ -46,22 +46,22 @@ typedef struct sip_session_count {
 } sip_session_count_t;
 
 typedef struct xt_cclimit_htable {
-	struct hlist_head hhead[SIP_HASH_SIZE];
-	struct hlist_node hnode;
-	spinlock_t lock;
-	sip_session_count_t *ip_ptr;
-	int use;
-	char name[RULEID_NAME_SIZE];
+	struct hlist_head	hhead[SIP_HASH_SIZE];
+	struct hlist_node 	hnode;
+	spinlock_t 		lock;
+	sip_session_count_t 	*ip_ptr;
+	int 			use;
+	char 			name[RULEID_NAME_SIZE];
 	u8 family;
-       unsigned long self_addr;
-	atomic_t policy_count;
-	struct net *net;
-	struct proc_dir_entry *pde;
-	atomic_t  overlimit;
-	int hotdrop;
-	int match;
-	int log;
-	int state, next_state;
+        unsigned long 		self_addr;
+	atomic_t 		policy_count;
+	struct net 		*net;
+	struct proc_dir_entry 	*pde;
+	atomic_t  		overlimit;
+	int 			hotdrop;
+	int 			match;
+	int 			log;
+	int 			state, next_state;
 	
 } xt_cclimit_htable_t;
 
@@ -82,6 +82,11 @@ typedef struct nf_conn_cclimit {
 	unsigned int num;
 	
 } nf_conn_cclimit_t;
+
+typedef struct nfct_cclimit {
+	void *data;
+	union nf_inet_addr ip;
+} nfct_cclimit_t;
 
 /*  */
 static inline struct nf_conn_cclimit *nfct_cclimit(const struct nf_conn *ct)

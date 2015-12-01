@@ -46,9 +46,9 @@
 #endif
 
 typedef struct rate_unit {
-	unsigned long 	prev;	/* last modification */
 	u_int32_t 	credit;
 	u_int32_t 	credit_cap, cost;
+	unsigned long 	prev;	/* last modification */
 
 } rate_unit_t;
 

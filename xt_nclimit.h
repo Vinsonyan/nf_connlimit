@@ -18,7 +18,6 @@ enum nclimit_match_state {
 	NCLIMIT_MSM_PRECHECK,
 	NCLIMIT_MSM_POLICY,
 	NCLIMIT_MSM_PERIP,
-	//NCLIMIT_MSM_LOG,
 	NCLIMIT_MSM_DONE,
 };
 
@@ -79,25 +78,11 @@ typedef struct xt_nclimit_htable {
 typedef struct xt_nclimit_info {
 	char name[CONNLIMIT_NAME_LEN];
 	char pf_name[RULEID_NAME_SIZE];
-	rate_unit_t rs, rp;
-	int log;
 
 	/* Used internally by the kernel */
 	unsigned long obj_addr;
 	struct xt_nclimit_htable *hinfo;
 	
 } xt_nclimit_info_t;
-
-/* For nclimit match state machine */
-typedef struct nclimit_msm_state {
-	int state;
-	int next_state;
-	xt_nclimit_info_t *info;
-	xt_nclimit_htable_t *ht;
-	const struct sk_buff *skb;
-	int hotdrop;
-	unsigned long now;
-	
-} nclimit_msm_state_t;
 
 #endif	/* __XT_NCLIMIT_H__*/
