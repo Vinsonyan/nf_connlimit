@@ -141,9 +141,8 @@ nclimit_find(xt_nclimit_htable_t *ht)
 {
 	struct hlist_node *pos;
 	ip_nclimit_t *iplimit = NULL, *node = NULL;
-	int hash = connlimit_ip_hash(ht->ip, NFPROTO_IPV4);
 
-	hlist_for_each_entry_rcu(node, pos, &ht->head[hash], hnode) {
+	hlist_for_each_entry_rcu(node, pos, &ht->iphash[ht->hash].hhead, hnode) {
 		if (nf_inet_addr_cmp(&node->ip, &ht->ip)) {
 			iplimit = node;
 			break;
@@ -168,7 +167,6 @@ out:
 static  ip_nclimit_t *
 nclimit_alloc_init(xt_nclimit_htable_t *ht)
 {
-	int hash = 0;
 	ip_nclimit_t *iplimit = NULL;
 
 	iplimit = kzalloc(sizeof(ip_nclimit_t), GFP_ATOMIC);
@@ -179,13 +177,11 @@ nclimit_alloc_init(xt_nclimit_htable_t *ht)
 	iplimit->ip = ht->ip;
 	memcpy(&iplimit->r, &ht->rp, sizeof(iplimit->r));
 
-	hash = connlimit_ip_hash(iplimit->ip, NFPROTO_IPV4);
-
-	hlist_add_head_rcu(&iplimit->hnode, &ht->head[hash]);
+	hlist_add_head_rcu(&iplimit->hnode, &ht->iphash[ht->hash].hhead);
 	return iplimit;
 }
 
-static int nclimit_check_perip_limit(xt_nclimit_htable_t *ht, ip_nclimit_t **limit, unsigned long now)
+static ip_nclimit_t *  nclimit_check_perip_limit(xt_nclimit_htable_t *ht, unsigned long now)
 {
 	ip_nclimit_t *iplimit = NULL;
 	
@@ -219,33 +215,9 @@ static int nclimit_check_perip_limit(xt_nclimit_htable_t *ht, ip_nclimit_t **lim
 		ht->match = false;
 			
 out:
-	if (iplimit) *limit = iplimit;
-
 	rcu_read_unlock();
-	return (ht->match);
+	return iplimit;
 }
-
-#if 0
-static void nclimit_update_htable(xt_nclimit_htable_t *ht)
-{
-	connlimit_cfg_t *cfg = NULL;
-
-	rcu_read_lock();
-
-	cfg = connlimit_get_cfg_rcu(info->obj_addr);
-	if (NULL == cfg || NULL == ht) {
-		ht->match = -1;
-		goto out;
-	}
-
-	
-
-	
-out:		
-	rcu_read_unlock();
-
-}
-#endif
 
 static int 
 nclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
@@ -268,6 +240,7 @@ nclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 	}
 
 	nclimit_update_rateinfo(ht, cfg);
+	ht->now = jiffies;
 out:
 	ht->match = true;
 	ht->hotdrop = false;
@@ -303,7 +276,6 @@ nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
-	ip_nclimit_t *iplimit = NULL;
 	
 	do {
 		if (0 == ht->rs.cost) 
@@ -317,7 +289,7 @@ nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 		} else {
 			/* calculate current overlimit rate for pring log */
 			ht->stat.diff = ht->now - ht->stat.log_prev_timer;
-			nclimit_print_log(ht,iplimit, POLICY_LOG);
+			nclimit_print_log(ht, NULL, POLICY_LOG);
 			ht->stat.log_prev_timer = ht->now;
 
 			/* Change msm state. */
@@ -339,6 +311,31 @@ nclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_nclimit_htable_t *ht = info->hinfo;
 	ip_nclimit_t *iplimit = NULL;
 
+	if (0 == ht->rp.cost)
+		goto out;
+
+	ht->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
+	ht->hash = connlimit_ip_hash(ht->ip, ht->family);
+
+	spin_lock_bh(&ht->iphash[ht->hash].lock);
+
+	iplimit = nclimit_check_perip_limit(ht, ht->now);
+	if (true != ht->match) {
+		/* calculate perip overlimit rate for print log */
+		iplimit->stat.diff = ht->now - iplimit->stat.log_prev_timer;
+		nclimit_print_log(ht, iplimit, PERIP_LOG);
+
+		/* Change msm state. */
+		ht->match = false;
+		ht->hotdrop = true;
+		ht->next_state = NCLIMIT_MSM_DONE;
+	}
+
+	spin_unlock_bh(&ht->iphash[ht->hash].lock);
+
+out:
+	return (ht->match);
+#if 0
 	do {
 		if (0 == ht->rp.cost)
 			break;
@@ -359,6 +356,7 @@ nclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 	} while (0);
 
 	return (ht->match);
+#endif
 }
 
 /*
@@ -388,7 +386,6 @@ static bool nclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 
 	spin_lock_bh(&ht->lock);
 
-	ht->now = jiffies;
 	while (ht->state != NCLIMIT_MSM_DONE) {
 		ht->next_state = nclimit_state_table[ht->state].next_state;
 		
@@ -470,14 +467,16 @@ static void nclimit_htable_cleanup(xt_nclimit_htable_t *ht,
 	ip_nclimit_t *iplimit;
 	struct hlist_node *pos, *n;
 
-	spin_lock_bh(&ht->lock);
+//	spin_lock_bh(&ht->lock);
 	for (i = 0; i < SIP_HASH_SIZE; i++) {
-		hlist_for_each_entry_safe(iplimit, pos, n, &ht->head[i], hnode) {
+		spin_lock_bh(&ht->iphash[i].lock);
+		hlist_for_each_entry_safe(iplimit, pos, n, &ht->iphash[i].hhead, hnode) {
 			if ((*nclimit_select_gc)(ht, iplimit))
 				nclimit_free(ht, iplimit);
 		}
+		spin_unlock_bh(&ht->iphash[i].lock);
 	}
-	spin_unlock_bh(&ht->lock);
+//	spin_unlock_bh(&ht->lock);
 	return ;
 }
 
@@ -504,8 +503,10 @@ static int nclimit_htable_create(struct net *net, xt_nclimit_info_t *info,
 		return -ENOMEM;
 	info->hinfo = hinfo;
 
-	for (i = 0; i < SIP_HASH_SIZE; i++)
-		INIT_HLIST_HEAD(&hinfo->head[i]);
+	for (i = 0; i < SIP_HASH_SIZE; i++) {
+		INIT_HLIST_HEAD(&hinfo->iphash[i].hhead);
+		spin_lock_init(&hinfo->iphash[i].lock);
+	}
 
 	spin_lock_init(&hinfo->lock);
 	strlcpy(hinfo->name, info->pf_name, sizeof(hinfo->name));
@@ -689,8 +690,8 @@ static int nclimit_seq_show(struct seq_file *s, void *v)
 	struct hlist_node *pos = NULL;
 	ip_nclimit_t *iplimit = NULL;
 
-	if (!hlist_empty(&ht->head[*bucket])) {
-		hlist_for_each_entry(iplimit, pos, &ht->head[*bucket], hnode) {
+	if (!hlist_empty(&ht->iphash[*bucket].hhead)) {
+		hlist_for_each_entry(iplimit, pos, &ht->iphash[*bucket].hhead, hnode) {
 			seq_printf(s, "ip_node = %-16pI4 hash = %u\n", 
 				&(iplimit->ip),
 				(unsigned int)*bucket);

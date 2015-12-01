@@ -50,11 +50,19 @@ typedef struct ip_nclimit {
 	
 } ip_nclimit_t;
 
+typedef struct ip_nclimit_head {
+	struct hlist_head hhead;
+	spinlock_t lock;
+
+} ip_nclimit_hash_t;
+
 typedef struct xt_nclimit_htable {
-	struct hlist_head head[SIP_HASH_SIZE];
+	ip_nclimit_hash_t iphash[SIP_HASH_SIZE];
+	//struct hlist_head head[SIP_HASH_SIZE];
 	struct hlist_node hnode;
 	char 		name[RULEID_NAME_SIZE];
 	union nf_inet_addr ip;
+	unsigned int	hash;
 	u8 		family;
 	unsigned long 	now, prev;
 	rate_unit_t 	rs, rp;
