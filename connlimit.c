@@ -253,8 +253,6 @@ static int connlimit_modify_item(connlimit_request_t *request)
 #endif
 	
 	hlist_for_each_entry(pos, p, &connlimit_list, hnode) {
-		if (pos)
-			printk("pos->name [%s], request->name [%s].\n", pos->name, request->name);
 		if (pos && (0 == (strncmp(pos->name, request->name, 
 		    strlen(request->name))))) {
 			item = pos;

@@ -54,6 +54,7 @@ typedef struct xt_cclimit_htable {
 	char 			name[RULEID_NAME_SIZE];
 	u8 family;
         unsigned long 		self_addr;
+	unsigned long 			ip_limit_addr;
 	atomic_t 		policy_count;
 	struct net 		*net;
 	struct proc_dir_entry 	*pde;
@@ -85,8 +86,7 @@ typedef struct nf_conn_cclimit {
 #endif
 
 typedef struct nfct_cclimit {
-	unsigned long addr;
-//	void *data;
+	unsigned long addr, ip_limit_addr;
 	union nf_inet_addr ip;
 } nfct_cclimit_t;
 

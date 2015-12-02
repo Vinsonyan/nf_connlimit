@@ -125,7 +125,7 @@ static __inline__ void cclimit_policy_count_get(xt_cclimit_htable_t *hinfo)
 	return ;
 }
 
-static __inline__ void cclimit_policy_count_put(xt_cclimit_htable_t *hinfo)
+static __inline__ void cclimit_policy_put(xt_cclimit_htable_t *hinfo)
 {
 	if (hinfo && atomic_read(&hinfo->policy_count))
 		atomic_dec(&hinfo->policy_count);
@@ -282,13 +282,10 @@ cclimit_msm_ct_extend(const struct sk_buff *skb, struct xt_action_param *par)
 
 	cclimit->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
 	cclimit->addr = (unsigned long)ht->self_addr;
+	cclimit->ip_limit_addr = (unsigned long)ht->ip_ptr;
 	ht->next_state = CCLIMIT_MSM_DONE;
-#ifdef CONNLIMIT_DEBUG
-	if (true != ht->match)
-		printk("Why?\n");
-#endif
-	return (ht->match);
 
+	return (ht->match);
 out:
 	ht->next_state = CCLIMIT_MSM_DESTROY;
 	return (ht->match);
@@ -303,7 +300,7 @@ cclimit_msm_fint(const struct sk_buff *skb, struct xt_action_param *par)
 	if (true == ht->match || NULL == ht->ip_ptr)
 		goto out;
 
-	cclimit_policy_count_put(ht);
+	cclimit_policy_put(ht);
 	cclimit_perip_put(ht->ip_ptr);
 
 out:
@@ -565,28 +562,21 @@ static void nf_cclimit_cleanup_conntrack(struct nf_conn *ct)
 {
 	xt_cclimit_htable_t *ht = NULL;
 	ip_cclimit_t *ip_cclimit = NULL;
-	struct hlist_node *prev = NULL, *next = NULL;
-	u_int32_t hash = 0;
-	nfct_cclimit_t *cclimit = nf_ct_ext_find(ct, NF_CT_EXT_CCLIMIT);
+	nfct_cclimit_t *cclimit = NULL;
 	
 	spin_lock_bh(&cclimit_lock);
-
+	
+	cclimit = nf_ct_ext_find(ct, NF_CT_EXT_CCLIMIT);
 	if (NULL == cclimit || (cclimit && 0 == cclimit->addr))
 		return ;
 
 	ht = (xt_cclimit_htable_t *)cclimit->addr;
-
 	spin_lock_bh(&ht->lock);
-	hash = connlimit_ip_hash(cclimit->ip, ht->family);
-	/* walk through per iphash */
-	hlist_for_each_entry_safe(ip_cclimit, prev, next,&ht->hhead[hash], hnode ) {
-		if (nf_inet_addr_cmp(&ip_cclimit->sip, &cclimit->ip)) {
-			cclimit_perip_put(ip_cclimit);
-			cclimit_policy_count_put(ht);
-			break;
-		}
-	}
-
+	
+	ip_cclimit = (ip_cclimit_t*)cclimit->ip_limit_addr;
+	cclimit_perip_put(ip_cclimit);
+	cclimit_policy_put(ht);
+	
 	spin_unlock_bh(&ht->lock);
 	spin_unlock_bh(&cclimit_lock);
 	

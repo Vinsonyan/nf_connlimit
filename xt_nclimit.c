@@ -233,17 +233,15 @@ nclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 		goto out;
 	}
 
-	if ((ht->rp.cost == cfg->rp.cost) &&
-	    (ht->rs.cost == cfg->rs.cost) &&
-	    (ht->log == cfg->log)) {
-		goto out;
-	}
+	if ((ht->rp.cost != cfg->rp.cost) ||
+	    (ht->rs.cost != cfg->rs.cost) ||
+	    (ht->log != cfg->log))
+		nclimit_update_rateinfo(ht, cfg);
 
-	nclimit_update_rateinfo(ht, cfg);
-	ht->now = jiffies;
-out:
 	ht->match = true;
 	ht->hotdrop = false;
+	ht->now = jiffies;
+out:
 	rcu_read_unlock();
 	return (ht->match);
 }
