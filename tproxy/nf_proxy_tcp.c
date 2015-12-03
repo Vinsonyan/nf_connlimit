@@ -905,7 +905,6 @@ static const struct file_operations tproxy_file_fops = {
 	.release        = seq_release,
 };
 
-
 struct proc_dir_entry *proc_tproxy = NULL;
 
 static int __net_init 

@@ -181,7 +181,7 @@ nclimit_alloc_init(xt_nclimit_htable_t *ht)
 	return iplimit;
 }
 
-static ip_nclimit_t *  nclimit_check_perip_limit(xt_nclimit_htable_t *ht, unsigned long now)
+static void  nclimit_check_perip_limit(xt_nclimit_htable_t *ht)
 {
 	ip_nclimit_t *iplimit = NULL;
 	
@@ -190,13 +190,13 @@ static ip_nclimit_t *  nclimit_check_perip_limit(xt_nclimit_htable_t *ht, unsign
 	if (NULL == iplimit) {
 		iplimit = nclimit_alloc_init(ht);
 		if (NULL == iplimit) { 
-			ht->match = true;
+			ht->match = -1;
 			goto out;
 		}
 
 		/* sourct IP. */
 		iplimit->ip = ht->ip;
-		iplimit->r.prev = now;
+		iplimit->r.prev = ht->now;
 
 		/* Initialize perIP connlimit rateinfo. */
 		iplimit->r.credit = ht->rp.credit;
@@ -205,18 +205,26 @@ static ip_nclimit_t *  nclimit_check_perip_limit(xt_nclimit_htable_t *ht, unsign
 
 	} else {
 		/* refresh expires */
-		iplimit->expires = now + (20 * HZ);
-		rateinfo_recalc(&iplimit->r, now);
+		iplimit->expires = ht->now + (20 * HZ);
+		rateinfo_recalc(&iplimit->r, ht->now);
 	}
 
 	if (iplimit->r.credit > iplimit->r.cost) 
 		iplimit->r.credit -= iplimit->r.cost;
-	else  
+	else {
+		/* calculate perip overlimit rate for print log */
+		iplimit->stat.diff = ht->now - iplimit->stat.log_prev_timer;
+		nclimit_print_log(ht, iplimit, PERIP_LOG);
+
+		/* Change msm state. */
 		ht->match = false;
+		ht->hotdrop = true;
+		ht->next_state = NCLIMIT_MSM_DONE;
+	} 
 			
 out:
 	rcu_read_unlock();
-	return iplimit;
+	return ;
 }
 
 static int 
@@ -274,30 +282,27 @@ nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
-	
-	do {
-		if (0 == ht->rs.cost) 
-			break;
 
-		/* calculate rate for limit */		
-		rateinfo_recalc(&ht->rs, ht->now);
-		if (ht->rs.credit > ht->rs.cost) {
-			ht->rs.credit -= ht->rs.cost;
-			break;
-		} else {
-			/* calculate current overlimit rate for pring log */
-			ht->stat.diff = ht->now - ht->stat.log_prev_timer;
-			nclimit_print_log(ht, NULL, POLICY_LOG);
-			ht->stat.log_prev_timer = ht->now;
+	if (0 == ht->rs.cost)
+		goto out;
 
-			/* Change msm state. */
-			ht->match = false;
-			ht->hotdrop = true;
-			ht->next_state = NCLIMIT_MSM_DONE;
-			break;
-		}
-	} while (0);
+	/* calculate rate for limit */		
+	rateinfo_recalc(&ht->rs, ht->now);
+	if (ht->rs.credit > ht->rs.cost) {
+		ht->rs.credit -= ht->rs.cost;
+	} else {
+		/* calculate current overlimit rate for pring log */
+		ht->stat.diff = ht->now - ht->stat.log_prev_timer;
+		nclimit_print_log(ht, NULL, POLICY_LOG);
+		ht->stat.log_prev_timer = ht->now;
 
+		/* Change msm state. */
+		ht->match = false;
+		ht->hotdrop = true;
+		ht->next_state = NCLIMIT_MSM_DONE;
+	}
+
+out:
 	return (ht->match);
 }
 
@@ -307,7 +312,6 @@ nclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
-	ip_nclimit_t *iplimit = NULL;
 
 	if (0 == ht->rp.cost)
 		goto out;
@@ -316,45 +320,11 @@ nclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 	ht->hash = connlimit_ip_hash(ht->ip, ht->family);
 
 	spin_lock_bh(&ht->iphash[ht->hash].lock);
-
-	iplimit = nclimit_check_perip_limit(ht, ht->now);
-	if (true != ht->match) {
-		/* calculate perip overlimit rate for print log */
-		iplimit->stat.diff = ht->now - iplimit->stat.log_prev_timer;
-		nclimit_print_log(ht, iplimit, PERIP_LOG);
-
-		/* Change msm state. */
-		ht->match = false;
-		ht->hotdrop = true;
-		ht->next_state = NCLIMIT_MSM_DONE;
-	}
-
+	nclimit_check_perip_limit(ht);
 	spin_unlock_bh(&ht->iphash[ht->hash].lock);
 
 out:
 	return (ht->match);
-#if 0
-	do {
-		if (0 == ht->rp.cost)
-			break;
-		
-		ht->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
-		ht->match = nclimit_check_perip_limit(ht, &iplimit, ht->now);
-		if (true != ht->match) {
-			/* calculate perip overlimit rate for print log */
-			iplimit->stat.diff = ht->now - iplimit->stat.log_prev_timer;
-			nclimit_print_log(ht, iplimit, PERIP_LOG);
-
-			/* Change msm state. */
-			ht->match = false;
-			ht->hotdrop = true;
-			ht->next_state = NCLIMIT_MSM_DONE;
-			break;
-		}
-	} while (0);
-
-	return (ht->match);
-#endif
 }
 
 /*
@@ -386,19 +356,16 @@ static bool nclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 
 	while (ht->state != NCLIMIT_MSM_DONE) {
 		ht->next_state = nclimit_state_table[ht->state].next_state;
-		
+
 		match = nclimit_state_table[ht->state].action(skb, par);
 
 		if (true == match) {
-
 			/* some functions change the next state, see the state table */
 			ht->state = ht->next_state;
 		} else if (false == match) {
-
 			/* no match result, force state chane to done */
 			ht->state = NCLIMIT_MSM_DONE;
 		} else {
-
 			/* bad result, force state change to done */
 			match = true;
 			ht->state = NCLIMIT_MSM_DONE;

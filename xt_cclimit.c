@@ -103,7 +103,7 @@ cclimit_print_log(xt_cclimit_htable_t *ht, u_int32_t ip)
 	return ;
 }
 
-static __inline__ void cclimi_perip_get(ip_cclimit_t *sip_count)
+static __inline__ void cclimit_perip_get(ip_cclimit_t *sip_count)
 {
 	atomic_inc(&(sip_count->ip_count)); 
 	return ;
@@ -119,7 +119,7 @@ static __inline__ void cclimit_perip_put(ip_cclimit_t *sip_count)
 	return ;
 }
 
-static __inline__ void cclimit_policy_count_get(xt_cclimit_htable_t *hinfo)
+static __inline__ void cclimit_policy_get(xt_cclimit_htable_t *hinfo)
 {
 	atomic_inc(&hinfo->policy_count);
 	return ;
@@ -139,7 +139,7 @@ cclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
-	info->cfg = connlimit_get_cfg_rcu(info->obj_addr);
+	ht->cfg = connlimit_get_cfg_rcu(info->obj_addr);
 	if (NULL == cfg) {
 		ht->match = -1;
 		goto out;
@@ -157,20 +157,16 @@ cclimit_msm_precheck(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	struct nf_conn *ct = NULL;
 	enum ip_conntrack_info ctinfo;
-	//nf_conn_cclimit_t *cclimit_extend = NULL;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
-	if (0 == info->cfg->limitp && 0 == info->cfg->limits) 
+	if (0 == ht->cfg->limitp && 0 == ht->cfg->limits) 
 		goto out;
 
 	ct = nf_ct_get(skb, &ctinfo);
-	if (!ct || (ct && nf_ct_is_confirmed(ct))) 
+	if (!ct || nf_ct_is_confirmed(ct)) 
 		goto out;
 	
-	/* If the same packet that firs of session through mutile policy */
-	/* do something */
-
 	return (ht->match);
 out:	
 	ht->next_state = CCLIMIT_MSM_DONE;
@@ -206,14 +202,12 @@ cclimit_msm_prebuild(const struct sk_buff *skb, struct xt_action_param *par)
 		atomic_set(&ip_cclimit->ip_count, 0);
 		hlist_add_head(&ip_cclimit->hnode, &ht->hhead[hash]);
 	}
-	
-out:
-	if (NULL != ip_cclimit) {
-		ht->ip_ptr = ip_cclimit;
-		cclimit_policy_count_get(ht);
-		cclimi_perip_get(ip_cclimit);
-	}
 
+	ht->ip_ptr = ip_cclimit;
+	cclimit_policy_get(ht);
+	cclimit_perip_get(ip_cclimit);
+
+out:
 	return (ht->match);
 }
 
@@ -223,10 +217,10 @@ cclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
-	if (0 == info->cfg->limits)
+	if (0 == ht->cfg->limits)
 		goto out;
 
-	if (info->cfg->limits < atomic_read(&ht->policy_count)) {
+	if (ht->cfg->limits < atomic_read(&ht->policy_count)) {
 		ht->match = false;
 		ht->hotdrop = true;
 		atomic_inc(&ht->overlimit);
@@ -245,11 +239,11 @@ cclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_cclimit_htable_t *ht = info->hinfo;
 	ip_cclimit_t *ip_cclimit = ht->ip_ptr;
 
-	if (0 == info->cfg->limitp ||
+	if (0 == ht->cfg->limitp ||
 			(ht && NULL == ht->ip_ptr)) 
 		goto out;
 
-	if (info->cfg->limitp < atomic_read(&ip_cclimit->ip_count)) {
+	if (ht->cfg->limitp < atomic_read(&ip_cclimit->ip_count)) {
 		ht->match = false;
 		ht->hotdrop = true;
 		atomic_inc(&ip_cclimit->overlimit);
@@ -468,9 +462,8 @@ static inline int uncclimit(struct nf_conntrack_tuple_hash *i, xt_cclimit_htable
 	   ((cclimit && (0 == cclimit->addr))))
 		return 0;
 
-	spin_lock_bh(&ht->lock);
 	cclimit->addr = 0;
-	spin_unlock_bh(&ht->lock);
+	cclimit->ip_limit_addr = 0;
 
 	return 0;
 }
@@ -540,8 +533,6 @@ static void cclimit_mt_destroy(const struct xt_mtdtor_param *par)
 	cclimit_htable_put(info->hinfo);
 	spin_unlock_bh(&cclimit_lock);
 	
-	//nf_ct_l3proto_module_put(par->family);
-
 	return ;
 }
 
@@ -567,7 +558,7 @@ static void nf_cclimit_cleanup_conntrack(struct nf_conn *ct)
 	spin_lock_bh(&cclimit_lock);
 	
 	cclimit = nf_ct_ext_find(ct, NF_CT_EXT_CCLIMIT);
-	if (NULL == cclimit || (cclimit && 0 == cclimit->addr))
+	if (NULL == cclimit || (0 == cclimit->addr))
 		return ;
 
 	ht = (xt_cclimit_htable_t *)cclimit->addr;
