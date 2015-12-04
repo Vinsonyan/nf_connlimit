@@ -135,12 +135,11 @@ static __inline__ void cclimit_policy_put(xt_cclimit_htable_t *hinfo)
 static int 
 cclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 {
-	connlimit_cfg_t *cfg = NULL;
 	xt_cclimit_info_t *info = (xt_cclimit_info_t *)par->matchinfo;
 	xt_cclimit_htable_t *ht = info->hinfo;
 
 	ht->cfg = connlimit_get_cfg_rcu(info->obj_addr);
-	if (NULL == cfg) {
+	if (NULL == ht->cfg) {
 		ht->match = -1;
 		goto out;
 	}
@@ -520,7 +519,6 @@ static void cclimit_htable_put(xt_cclimit_htable_t *ht)
 		hlist_del(&ht->hnode);
 		cclimit_htable_destroy(ht);
 	}
-	
 	return ;
 }
 
@@ -558,8 +556,10 @@ static void nf_cclimit_cleanup_conntrack(struct nf_conn *ct)
 	spin_lock_bh(&cclimit_lock);
 	
 	cclimit = nf_ct_ext_find(ct, NF_CT_EXT_CCLIMIT);
-	if (NULL == cclimit || (0 == cclimit->addr))
+	if (NULL == cclimit || (0 == cclimit->addr)) {
+		spin_unlock_bh(&cclimit_lock);
 		return ;
+	}
 
 	ht = (xt_cclimit_htable_t *)cclimit->addr;
 	spin_lock_bh(&ht->lock);

@@ -16,6 +16,8 @@
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/time.h>
+#include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/netfilter/nf_conntrack_tcp.h>
 #include <linux/netfilter/x_tables.h>
 #include <net/netfilter/nf_conntrack.h>
@@ -24,6 +26,8 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 #include <linux/utsname.h>
+
+#include <net/sch_generic.h>
 
 #include "xt_nclimit.h"
 #include "connlimit.h"
@@ -83,6 +87,8 @@ nclimit_print_log6(union nf_inet_addr addrsrc, const char *tbuff, unsigned long 
 	return ;
 }
 
+#define HZ2NS	(HZ * 1000 * 10000)
+
 static void
 nclimit_print_log(xt_nclimit_htable_t *ht, ip_nclimit_t *iplimit, u_int8_t flags)
 {
@@ -96,7 +102,7 @@ nclimit_print_log(xt_nclimit_htable_t *ht, ip_nclimit_t *iplimit, u_int8_t flags
 
 	switch (flags) {
 	case POLICY_LOG:
-		current_rate = SAFEDIV(HZ, ht->stat.diff);
+		current_rate = SAFEDIV(HZ2NS, ht->stat.diff);
 		break;
 	case PERIP_LOG:
 		current_rate = SAFEDIV(HZ, iplimit->stat.diff);
@@ -212,16 +218,20 @@ static void  nclimit_check_perip_limit(xt_nclimit_htable_t *ht)
 	if (iplimit->r.credit > iplimit->r.cost) 
 		iplimit->r.credit -= iplimit->r.cost;
 	else {
-		/* calculate perip overlimit rate for print log */
-		iplimit->stat.diff = ht->now - iplimit->stat.log_prev_timer;
-		nclimit_print_log(ht, iplimit, PERIP_LOG);
+		if (ht->log) {
+			/* calculate perip overlimit rate for print log */
+			iplimit->stat.now = ktime_to_ns(ktime_get());
+			ht->stat.diff = iplimit->stat.now - iplimit->stat.log_prev_timer;
+			nclimit_print_log(ht, iplimit, PERIP_LOG);
+			iplimit->stat.log_prev_timer = iplimit->stat.now;
+		}
 
 		/* Change msm state. */
 		ht->match = false;
 		ht->hotdrop = true;
 		ht->next_state = NCLIMIT_MSM_DONE;
 	} 
-			
+
 out:
 	rcu_read_unlock();
 	return ;
@@ -273,7 +283,7 @@ nclimit_msm_precheck(const struct sk_buff *skb, struct xt_action_param *par)
 	
 no_check:
 	ht->next_state = NCLIMIT_MSM_DONE;
-	return 0;
+	return (ht->match);
 }
 
 /* Check new connlimit for policy */
@@ -291,10 +301,13 @@ nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 	if (ht->rs.credit > ht->rs.cost) {
 		ht->rs.credit -= ht->rs.cost;
 	} else {
-		/* calculate current overlimit rate for pring log */
-		ht->stat.diff = ht->now - ht->stat.log_prev_timer;
-		nclimit_print_log(ht, NULL, POLICY_LOG);
-		ht->stat.log_prev_timer = ht->now;
+		if (ht->log) {
+			/* calculate current overlimit rate for pring log */
+			ht->stat.now = ktime_to_ns(ktime_get());
+			ht->stat.diff = ht->stat.now - ht->stat.log_prev_timer;
+			nclimit_print_log(ht, NULL, POLICY_LOG);
+			ht->stat.log_prev_timer = ht->stat.now;
+		}
 
 		/* Change msm state. */
 		ht->match = false;

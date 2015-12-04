@@ -27,8 +27,9 @@ enum nclimit_log {
 };
 
 typedef struct nclimit_stat {
-	u_int64_t       diff;
-	u_int64_t       log_prev_timer;	
+	long   	diff;
+	s64	now;
+	s64   log_prev_timer;	
 } nclimit_stat_t;
 
 /* nclimit match struct */
@@ -58,7 +59,6 @@ typedef struct ip_nclimit_head {
 
 typedef struct xt_nclimit_htable {
 	ip_nclimit_hash_t iphash[SIP_HASH_SIZE];
-	//struct hlist_head head[SIP_HASH_SIZE];
 	struct hlist_node hnode;
 	char 		name[RULEID_NAME_SIZE];
 	union nf_inet_addr ip;
