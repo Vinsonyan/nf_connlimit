@@ -5,10 +5,14 @@
 #define CONNLIMIT_DEBUG
 #endif
 
-#define CONNLIMIT_NAME_LEN	(32 *3)
+#ifndef USE_MODULE
+//#define USE_MODULE
+#endif
+
+#define CONNLIMIT_NAME_LEN	128
 
 /* timings are in milliseconds. */
-#define XT_LIMIT_SCALE 10000
+#define XT_LIMIT_SCALE 2000000	//对应于用户态的S_NCLIMIT_SHARE_MAX 宏
 
 #define MAX_CPJ (0xFFFFFFFF / (HZ*60*60*24))
 
@@ -46,9 +50,9 @@
 #endif
 
 typedef struct rate_unit {
-	unsigned long 	prev;	/* last modification */
 	u_int32_t 	credit;
 	u_int32_t 	credit_cap, cost;
+	unsigned long 	prev;	/* last modification */
 
 } rate_unit_t;
 
@@ -81,7 +85,7 @@ typedef struct connlimit_item {
 	struct hlist_node 	hnode;
 	char 			name[CONNLIMIT_NAME_LEN];
 	connlimit_cfg_t 	*cfg;
-	atomic_t 			refcnt;
+	atomic_t		refcnt;
 	
 } connlimit_item_t;
 
@@ -90,9 +94,12 @@ extern unsigned long connlimit_find_obj(const char *name);
 extern void connlimit_release_obj(unsigned long addr);
 extern unsigned int connlimit_ip_hash(union nf_inet_addr u, u_int8_t family);
 extern void connlimit_get_time(char *tbuff);
-#if 0
-extern int connlimit_init(void);
-extern void connlimit_fint(void);
+#ifndef USE_MODULE
+extern int xt_cclimit_init(void);
+extern void xt_cclimit_fint(void);
+extern int xt_nclimit_init(void);
+extern void xt_nclimit_fint(void);
 #endif
+
 #endif /* __KERNEL__ */
 #endif	/* __CONNLIMIT_H__ */

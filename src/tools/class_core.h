@@ -8,7 +8,7 @@
 #endif
 
 #define MAX_CLASS_NAME_LEN	32
-#define MAX_OBJ_NAME_LEN	(32 * 3)
+#define MAX_OBJ_NAME_LEN	((32 * 3) + 1)
 
 #ifdef __KERNEL__
 #ifdef DEBUG
@@ -44,9 +44,9 @@ enum netobj_so_set_cmds {
 
 	/* Service object */	
 	SERVICE_OBJ_ADD,
-        SERVICE_OBJ_MODIFY,
-        SERVICE_OBJ_DELETE,
-        SERVICE_OBJ_EMPTY,	
+    SERVICE_OBJ_MODIFY,
+    SERVICE_OBJ_DELETE,
+    SERVICE_OBJ_EMPTY,	
 
 	/* Service group */
 	SERV_GROUP_OBJ_ADD,
@@ -75,6 +75,17 @@ enum netobj_so_set_cmds {
 	CONNLIMIT_OBJ_ADD,
 	CONNLIMIT_OBJ_MODIFY,
 	CONNLIMIT_OBJ_DELETE,
+	
+	/* Domain object */
+	DOMAIN_OBJ_ADD,
+	DOMAIN_OBJ_MODIFY,
+	DOMAIN_OBJ_DELETE,
+	DOMAIN_OBJ_FLUSH,
+
+    /* ClassSet object. */
+    CLASSET_OBJ_ADD,    
+    CLASSET_OBJ_SET,
+    CLASSET_OBJ_DEL,
 
 	NET_OBJECT_SET_MAX,
 };
@@ -112,8 +123,25 @@ enum netobj_so_get_cmds {
 	CONNLIMIT_OBJ_SHOW,
 	CONNLIMIT_OBJ_EXIST,
 
+	/* Domain object */
+	DOMAIN_OBJ_SHOW,
+	DOMAIN_OBJ_EXIST,
+	DOMAIN_OBJ_GET_COUNT,
+
+    /* ClassSet object. */
+    CLASSET_OBJ_GET_REFCNT_INF,
+    CLASSET_OBJ_GET_REFCNT,
+
+    /* Region address. */
+    REGION_GET_BY_ADDRESS,
+    
 	NET_OBJECT_GET_MAX,
 };
+
+typedef enum class_type {
+    CLASS_T_UNSPEC = 0,
+    CLASS_T_ADDR,
+} class_type_t;
 
 #ifdef __KERNEL__
 typedef struct class_item_cfg {
@@ -139,6 +167,9 @@ typedef struct sockopt_array_s
 typedef struct class_item {
 	struct list_head list;
 	const char class_name[MAX_CLASS_NAME_LEN];
+
+    /* Class type. Same type needs same match args. */
+    unsigned char class_type;
 	
 	/* Func for operation class_item */
 	void( *bind_class )( struct class_item * );

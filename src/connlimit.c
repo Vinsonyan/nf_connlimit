@@ -40,12 +40,7 @@ MODULE_ALIAS( "ip6t_connlimit" );
 HLIST_HEAD(connlimit_list);
 DEFINE_MUTEX(class_lock);
 
-#ifndef USE_MODULE
-#define USE_MODULE
-#endif
-
-#define BRUST	5
-
+#define BRUST	HZ
 #define MAX_CPJ (0xFFFFFFFF / (HZ*60*60*24))
 
 /* Repeated shift and or gives us all 1s, final shift and add 1 gives
@@ -66,22 +61,10 @@ connlimit_get_time(char *tbuff)
         struct timespec ts;
         ts = CURRENT_TIME_SEC;
 
-        CONNLIMIT_SHOW_TIME(ts.tv_sec, tbuff);
+        CONNLIMIT_SHOW_TIME(ts.tv_sec + 8*60*60, tbuff);
         return ;
 }
 EXPORT_SYMBOL(connlimit_get_time);
-
-/* Precision saver. */
-static u_int32_t
-user2credits(u_int32_t user)
-{
-	/* If multiplying would overflow... */
-	if (user > 0xFFFFFFFF / (HZ*CREDITS_PER_JIFFY))
-		/* Divide first. */
-		return (user / XT_LIMIT_SCALE) * HZ * CREDITS_PER_JIFFY;
-
-	return (user * HZ * CREDITS_PER_JIFFY) / XT_LIMIT_SCALE;
-}
 
 static __inline__ void
 connlimit_item_put(connlimit_item_t *item)
@@ -90,8 +73,7 @@ connlimit_item_put(connlimit_item_t *item)
 		hlist_del(&item->hnode);
 		if (item->cfg) netobj_kfree(item->cfg, sizeof(connlimit_cfg_t));
 		item->cfg = NULL;	
-		netobj_kfree(item, sizeof(item));
-		item = NULL;
+		netobj_kfree(item, sizeof(connlimit_item_t));
 	}
 	return ;
 }
@@ -119,18 +101,19 @@ unsigned long
 connlimit_find_obj(const char *name)
 {
 	struct hlist_node *pos = NULL;
-	connlimit_item_t *item = NULL;
+	connlimit_item_t *item = NULL, *found = NULL;
 
 	mutex_lock(&class_lock);
 	hlist_for_each_entry(item, pos, &connlimit_list, hnode) {
 		if (!(strncmp(item->name, name, CONNLIMIT_NAME_LEN))) {
 			connlimit_item_get(item);
+			found = item;
 			break;
 		}
 	}
 	mutex_unlock(&class_lock);
 
-	return (item ? (unsigned long)item : 0);
+	return (found ? (unsigned long)found : 0);
 }
 EXPORT_SYMBOL(connlimit_find_obj);
 
@@ -188,19 +171,13 @@ static int connlimit_construct_item(connlimit_request_t *request)
 
 	memcpy(cfg, &request->cfg, sizeof(connlimit_cfg_t));
 	/* reclac rateinfo */
-	cfg->rp.credit = user2credits(cfg->avgp * BRUST);
-	cfg->rp.credit_cap = user2credits(cfg->avgp * BRUST);
-	cfg->rp.cost = user2credits(cfg->avgp);
+	cfg->rp.credit = HZ * cfg->avgp;
+	cfg->rp.credit_cap = HZ * cfg->avgp;
+	cfg->rp.cost = HZ;
 
-	cfg->rs.credit = user2credits(cfg->avgs * BRUST);
-	cfg->rs.credit_cap = user2credits(cfg->avgs * BRUST);
-	cfg->rs.cost = user2credits(cfg->avgs);
-
-#ifdef DEBUG
-	cfg->log = 1;
-#endif
-
-	printk("%u %u %u %u.\n", cfg->limits, cfg->limitp, cfg->avgs, cfg->avgp);
+	cfg->rs.credit = HZ * cfg->avgs;
+	cfg->rs.credit_cap = HZ * cfg->avgs;
+	cfg->rs.cost = HZ;
 
 	item = netobj_kzalloc(sizeof(connlimit_item_t), GFP_KERNEL);
 	if (NULL == item) {
@@ -213,8 +190,6 @@ static int connlimit_construct_item(connlimit_request_t *request)
 	atomic_set(&item->refcnt, 1);
 	item->cfg = cfg;
 
-	printk("%s %u %u %u %u\n", item->name, item->cfg->limits,item->cfg->limitp, item->cfg->avgs, item->cfg->avgp);
-	
 	hlist_add_head(&item->hnode, &connlimit_list);
 	return ret;
 out:
@@ -240,23 +215,16 @@ static int connlimit_modify_item(connlimit_request_t *request)
 	
 	memcpy(new_cfg, &request->cfg, sizeof(connlimit_cfg_t));
 	/* reclac rateinfo */
-	new_cfg->rp.credit = user2credits(new_cfg->avgp * BRUST);
-	new_cfg->rp.credit_cap = user2credits(new_cfg->avgp * BRUST);
-	new_cfg->rp.cost = user2credits(new_cfg->avgp);
+	new_cfg->rp.credit = HZ * new_cfg->avgp;
+	new_cfg->rp.credit_cap = HZ * new_cfg->avgp;
+	new_cfg->rp.cost = HZ;
 
-	new_cfg->rs.credit = user2credits(new_cfg->avgs * BRUST);
-	new_cfg->rs.credit_cap = user2credits(new_cfg->avgs * BRUST);
-	new_cfg->rs.cost = user2credits(new_cfg->avgs);
+	new_cfg->rs.credit = HZ * new_cfg->avgs;
+	new_cfg->rs.credit_cap = HZ * new_cfg->avgs;
+	new_cfg->rs.cost = HZ;
 
-#ifdef CONNLIMIT_DEBUG
-	new_cfg->log = 1;
-#endif
-	
 	hlist_for_each_entry(pos, p, &connlimit_list, hnode) {
-		if (pos)
-			printk("pos->name [%s], request->name [%s].\n", pos->name, request->name);
-		if (pos && (0 == (strncmp(pos->name, request->name, 
-		    strlen(request->name))))) {
+		if (pos && (0 == (strncmp(pos->name, request->name, CONNLIMIT_NAME_LEN)))) {
 			item = pos;
 			break;
 		}
@@ -327,8 +295,6 @@ static int do_add_connlimit_cmd(void __user *user, int *len)
 		goto out;
 	}
 
-	printk("%s: %s %u %u %u %u.\n",__func__, request.name,request.cfg.limits,request.cfg.limitp,
-					request.cfg.avgs, request.cfg.avgp);
 	ret = connlimit_construct_item(&request);
 	if (0 != ret) {
 		printk("Construct connlimit object failed.\n");
@@ -358,8 +324,6 @@ static int do_modify_connlimit_cmd(void __user *user, int *len)
 		goto out;
 	}
 
-	printk("%s: %s %u %u %u %u.\n",__func__, request.name,request.cfg.limits,request.cfg.limitp,
-					request.cfg.avgs, request.cfg.avgp);
 	ret = connlimit_modify_item(&request);
 	if (0 != ret) {
 		printk("Construct connlimit object failed.\n");
@@ -581,11 +545,7 @@ void connlimit_obj_proc_fint( void )
 	return ;
 }
 
-#ifdef USE_MODULE
 static int __init connlimit_init( void )
-#else
-int connlimit_init(void)
-#endif	/* USE_MODULE */
 {
 	int ret = 0;
 	ret = connlimit_obj_proc_init();
@@ -596,33 +556,39 @@ int connlimit_init(void)
 	if (0 != ret)
 		goto unreg_proc;
 
+	ret = xt_nclimit_init();
+	if (0 != ret) {
+		printk("[connlimit]: Initiation nclimit match faile.\n");
+		goto unreg_sockopt;
+	}
+
+	ret = xt_cclimit_init();
+	if (0 != ret) {
+		printk("[connlimit]:Initiation cclimit match failed.\n");
+		goto unreg_nclimit;
+	}
+
 	return ret;
 
+unreg_nclimit:
+	xt_nclimit_fint();
+unreg_sockopt:
+	netobj_sockopts_unregister(connlimit_object_sockopt);
 unreg_proc:
 	connlimit_obj_proc_fint();
 out:
 	return ret;
 }
-#ifndef USE_MODULE
-EXPORT_SYMBOL(connlimit_init);
-#endif
 
-
-#ifdef USE_MODULE
 static void __exit connlimit_fint( void )
-#else
-void connlimit_fint(void)
-#endif	/* USE_MODULE */
 {
 	netobj_sockopts_unregister(connlimit_object_sockopt);
 	connlimit_obj_proc_fint();
+	xt_cclimit_fint();
+	xt_nclimit_fint();
 	return ;
 }
-#ifndef USE_MODULE
-EXPORT_SYMBOL(connlimit_fint);
-#endif
 
-#ifdef USE_MODULE
 module_init(connlimit_init);
 module_exit(connlimit_fint);
-#endif	/* USE_MODULE */
+

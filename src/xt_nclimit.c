@@ -16,6 +16,8 @@
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/time.h>
+#include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/netfilter/nf_conntrack_tcp.h>
 #include <linux/netfilter/x_tables.h>
 #include <net/netfilter/nf_conntrack.h>
@@ -25,6 +27,8 @@
 #include <net/netns/generic.h>
 #include <linux/utsname.h>
 
+#include <net/sch_generic.h>
+
 #include "xt_nclimit.h"
 #include "connlimit.h"
 #include "class_core.h"
@@ -33,6 +37,8 @@ MODULE_LICENSE( "GPL" );
 MODULE_DESCRIPTION( "x_tables new connections match module" );
 MODULE_ALIAS( "ipt_nclimit" );
 MODULE_ALIAS( "ip6t_nclimit" );
+
+static DEFINE_MUTEX(nclimit_mutex);
 
 struct nclimit_net {
 	struct hlist_head	htables;
@@ -46,42 +52,94 @@ static inline struct nclimit_net *nclimit_pernet(struct net *net)
 	return net_generic(net, nclimit_net_id);
 }
 
-static DEFINE_SPINLOCK(nclimit_lock);
-
 struct proc_dir_entry *nclimit_dir = NULL;
 static const struct file_operations nclimit_file_ops;
 
 static void
-nclimit_print_log4(union nf_inet_addr u, u_int8_t family, const char *tbuff)
+nclimit_print_log4(union nf_inet_addr addrsrc, const char *tbuff, unsigned long rate)
 {
+	printk(KERN_INFO "gettextkey(devid=0 date=\"%%s\" dname=\"themis\" logtype=28 "
+			 "pri=5 ver=0.3.0 mod=%%s act=%%s "  
+			 "dsp_msg=\" host: %%s's address group newconnect over limit,"
+			 "over_limit=%%s \" fwlog=0);"
+			 "gettextval(%s);"
+			 "gettextval(%s);"
+			 "gettextval(%s);"
+			 "gettextval(%pI4);"
+			 "gettextval(%lu);\n" ,
+			 tbuff, "connlimits","drop", &(addrsrc.ip), rate);
 	return ;
 }
 
 static void
-nclimit_print_log6(union nf_inet_addr u, u_int8_t family, const char *tbuff)
+nclimit_print_log6(union nf_inet_addr addrsrc, const char *tbuff, unsigned long rate)
 {
+	printk(KERN_INFO "gettextkey(devid=0 date=\"%%s\" dname=\"themis\" logtype=28 "
+			 "pri=5 ver=0.3.0 mod=%%s act=%%s "  
+			 "dsp_msg=\" host: %%s's address group newconnect over limit,"
+			 "over_limit=%%s \" fwlog=0);"
+			 "gettextval(%s);"
+			 "gettextval(%s);"
+			 "gettextval(%s);"
+			 "gettextval(%pI6);"
+			 "gettextval(%lu);\n" ,
+			 tbuff, "connlimits", "drop", &(addrsrc.ip), rate);
 	return ;
 }
 
+#define HZ2NS	(HZ * 1000 * 10000)
+
 static void
-nclimit_print_log(xt_nclimit_htable_t *ht)
+nclimit_print_log(xt_nclimit_htable_t *ht, ip_nclimit_t *iplimit, u_int8_t flags)
 {
+	unsigned long current_rate = 0;
 	char tbuff[64] = {0};
-
-	if (!ht->log || !(net_ratelimit()))
+	if (!ht->log || (flags == PERIP_LOG && NULL == iplimit)) 
 		return ;
-	
+
+	if (!net_ratelimit())
+		return ;
+
+	switch (flags) {
+	case POLICY_LOG:
+		current_rate = SAFEDIV(HZ2NS, ht->stat.diff);
+		break;
+	case PERIP_LOG:
+		current_rate = SAFEDIV(HZ2NS, iplimit->stat.diff);
+		break;
+
+	default:
+		printk("%s nclimit print log Error!\n",__func__);
+	}
+
+	if (0 == current_rate)
+		return ;
+		
 	connlimit_get_time(tbuff);
 	if (NFPROTO_IPV4 == ht->family)
-		nclimit_print_log4(ht->ip, ht->family, tbuff);
+		nclimit_print_log4(ht->ip, tbuff, current_rate);
 	else if (NFPROTO_IPV6 == ht->family)
-		nclimit_print_log6(ht->ip, ht->family, tbuff);
+		nclimit_print_log6(ht->ip, tbuff, current_rate);
+
 	return ;
 }
 
-static inline void rateinfo_recalc(rate_unit_t *rateinfo, unsigned long now)
+static __inline__  void
+nclimit_update_rateinfo(xt_nclimit_htable_t *ht, connlimit_cfg_t *cfg)
 {
-	rateinfo->credit += (now - rateinfo->prev) * CREDITS_PER_JIFFY;
+	rcu_read_lock();
+	memcpy(&ht->rs, &cfg->rs, sizeof(ht->rs));	
+	memcpy(&ht->rp, &cfg->rp, sizeof(ht->rp));
+	ht->log = cfg->log;
+	rcu_read_unlock();
+	return ;
+}
+
+static inline void rateinfo_recalc(rate_unit_t *rateinfo, unsigned long now, u_int32_t count_per_jiffy)
+{
+	//printk(KERN_INFO "%d,count_per_jiffy=%d\n",__LINE__,count_per_jiffy);
+	rateinfo->credit += (now - rateinfo->prev) * count_per_jiffy;
+	//printk(KERN_INFO "%d,rateinfo->credit=%d\n",__LINE__,rateinfo->credit);
 	if (rateinfo->credit > rateinfo->credit_cap)
 		rateinfo->credit = rateinfo->credit_cap;
 	rateinfo->prev = now;
@@ -92,9 +150,8 @@ nclimit_find(xt_nclimit_htable_t *ht)
 {
 	struct hlist_node *pos;
 	ip_nclimit_t *iplimit = NULL, *node = NULL;
-	int hash = connlimit_ip_hash(ht->ip, NFPROTO_IPV4);
 
-	hlist_for_each_entry_rcu(node, pos, &ht->head[hash], hnode) {
+	hlist_for_each_entry_rcu(node, pos, &ht->iphash[ht->hash].hhead, hnode) {
 		if (nf_inet_addr_cmp(&node->ip, &ht->ip)) {
 			iplimit = node;
 			break;
@@ -117,9 +174,8 @@ out:
 }
 
 static  ip_nclimit_t *
-nclimit_alloc_init(xt_nclimit_htable_t *hinfo)
+nclimit_alloc_init(xt_nclimit_htable_t *ht)
 {
-	int hash = 0;
 	ip_nclimit_t *iplimit = NULL;
 
 	iplimit = kzalloc(sizeof(ip_nclimit_t), GFP_ATOMIC);
@@ -127,53 +183,69 @@ nclimit_alloc_init(xt_nclimit_htable_t *hinfo)
 		return NULL;
 
 	iplimit->expires = jiffies + (20 * HZ);
-	iplimit->ip = hinfo->ip;
+	iplimit->ip = ht->ip;
+	memcpy(&iplimit->r, &ht->rp, sizeof(iplimit->r));
 
-	memcpy(&iplimit->r, &hinfo->rp, sizeof(iplimit->r));
-
-	hash = connlimit_ip_hash(iplimit->ip, NFPROTO_IPV4);
-	spin_lock_bh(&nclimit_lock);
-	hlist_add_head_rcu(&iplimit->hnode, &hinfo->head[hash]);
-	spin_unlock_bh(&nclimit_lock);
+	hlist_add_head_rcu(&iplimit->hnode, &ht->iphash[ht->hash].hhead);
 	return iplimit;
 }
 
-static int nclimit_check_perip_limit(xt_nclimit_htable_t *hinfo, unsigned long now)
+static void  nclimit_check_perip_limit(xt_nclimit_htable_t *ht, struct xt_action_param *par)
 {
-	int match = true;
 	ip_nclimit_t *iplimit = NULL;
-	
+	connlimit_cfg_t *cfg = NULL;
+	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
+
 	rcu_read_lock();
-	iplimit = nclimit_find(hinfo);
+	cfg = connlimit_get_cfg_rcu(info->obj_addr);
+	if (NULL == cfg || NULL == ht) {
+		ht->match = -1;
+		goto out;
+	}
+	
+	iplimit = nclimit_find(ht);
 	if (NULL == iplimit) {
-		iplimit = nclimit_alloc_init(hinfo);
-		if (NULL == iplimit) {
-			match = -1;
+		iplimit = nclimit_alloc_init(ht);
+		if (NULL == iplimit) { 
+			ht->match = -1;
 			goto out;
 		}
 
-		iplimit->ip = hinfo->ip;
-		iplimit->r.prev = now;
-		iplimit->r.credit = hinfo->rp.credit;
-		iplimit->r.credit_cap = hinfo->rp.credit_cap;
-		iplimit->r.cost = hinfo->rp.cost;
-		
+		/* sourct IP. */
+		iplimit->ip = ht->ip;
+		iplimit->r.prev = ht->now;
+
+		/* Initialize perIP connlimit rateinfo. */
+		iplimit->r.credit = ht->rp.credit;
+		iplimit->r.credit_cap = ht->rp.credit_cap;
+		iplimit->r.cost = ht->rp.cost;
+
 	} else {
-		iplimit->expires = now + (20 * HZ);
-		if (iplimit->r.credit_cap != hinfo->rp.credit_cap) {
-			iplimit->r.credit_cap = hinfo->rp.credit_cap;
-			iplimit->r.cost = hinfo->rp.cost;
-			iplimit->r.credit = hinfo->rp.credit;
-		}
-		rateinfo_recalc(&iplimit->r, now);
+		/* refresh expires */
+		iplimit->expires = ht->now + (20 * HZ);
+		rateinfo_recalc(&iplimit->r, ht->now, cfg->avgp);
 	}
 
-	if (iplimit->r.credit >= iplimit->r.cost) 
+	if (iplimit->r.credit > iplimit->r.cost) 
 		iplimit->r.credit -= iplimit->r.cost;
+	else {
+		if (ht->log) {
+			/* calculate perip overlimit rate for print log */
+			iplimit->stat.now = ktime_to_ns(ktime_get());
+			iplimit->stat.diff = iplimit->stat.now - iplimit->stat.log_prev_timer;
+			nclimit_print_log(ht, iplimit, PERIP_LOG);
+			iplimit->stat.log_prev_timer = iplimit->stat.now;
+		}
+
+		/* Change msm state. */
+		ht->match = false;
+		ht->hotdrop = true;
+		ht->next_state = NCLIMIT_MSM_DONE;
+	} 
 
 out:
 	rcu_read_unlock();
-	return match;
+	return ;
 }
 
 static int 
@@ -190,23 +262,16 @@ nclimit_msm_init(const struct sk_buff *skb, struct xt_action_param *par)
 		goto out;
 	}
 
-	if ((ht->rp.cost == cfg->rp.cost) &&
-	     ht->rs.cost == cfg->rs.cost) {
-		goto out;
-	}
+	if ((ht->rp.credit_cap != cfg->rp.credit_cap) ||
+	    (ht->rs.credit_cap != cfg->rs.credit_cap) ||
+	    (ht->log != cfg->log))
+		nclimit_update_rateinfo(ht, cfg);
 
-	ht->rp.credit = cfg->rp.credit;
-	ht->rp.cost = cfg->rp.cost;
-	ht->rp.credit_cap = cfg->rp.credit_cap;
-
-	ht->rs.credit = cfg->rs.credit;
-	ht->rs.cost = cfg->rs.cost;
-	ht->rs.credit_cap = cfg->rs.credit_cap;
-	ht->log = cfg->log;
-
-out:
+	ht->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
 	ht->match = true;
 	ht->hotdrop = false;
+	ht->now = jiffies;
+out:
 	rcu_read_unlock();
 	return (ht->match);
 }
@@ -223,42 +288,55 @@ nclimit_msm_precheck(const struct sk_buff *skb, struct xt_action_param *par)
 	if (!ct || (ct && nf_ct_is_confirmed(ct))) 
 		goto no_check;
 
-	if (0 == ht->rp.cost && 0 == ht->rs.cost)
+	if (0 == ht->rp.credit_cap && 0 == ht->rs.credit_cap)
 		goto no_check;
 
 	return (ht->match);
 	
 no_check:
-	ht->next_state = NCLIMIT_MSM_DONE;
-	return 0;
+	ht->next_state = NCLIMIT_MSM_DONE;	
+	return (ht->match);
 }
 
 /* Check new connlimit for policy */
 static int
 nclimit_msm_policy(const struct sk_buff *skb, struct xt_action_param *par)
 {
+	connlimit_cfg_t *cfg = NULL;
 	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
-	
-	spin_lock_bh(&nclimit_lock);
-	do {
-		if (0 == ht->rs.cost) 
-			break;
 
-		rateinfo_recalc(&ht->rs, ht->now);
-		if (ht->rs.credit > ht->rs.cost) {
-			ht->rs.credit -= ht->rs.cost;
-			break;
-		} else {
-			ht->match = false;
-			ht->hotdrop = true;
-			ht->next_state = NCLIMIT_MSM_DONE;
-			nclimit_print_log(ht);
-			break;
+	if (0 == ht->rs.credit_cap)
+		goto out;
+
+	rcu_read_lock();
+	cfg = connlimit_get_cfg_rcu(info->obj_addr);
+	if (NULL == cfg || NULL == ht) {
+		ht->match = -1;
+		goto out;
+	}
+	rcu_read_unlock();
+
+	/* calculate rate for limit */		
+	rateinfo_recalc(&ht->rs, ht->now, cfg->avgs);
+	if (ht->rs.credit > ht->rs.cost) {
+		ht->rs.credit -= ht->rs.cost;
+	} else {
+		if (ht->log) {
+			/* calculate current overlimit rate for pring log */
+			ht->stat.now = ktime_to_ns(ktime_get());
+			ht->stat.diff = ht->stat.now - ht->stat.log_prev_timer;
+			nclimit_print_log(ht, NULL, POLICY_LOG);
+			ht->stat.log_prev_timer = ht->stat.now;
 		}
-	} while (0);
-	spin_unlock_bh(&nclimit_lock);
 
+		/* Change msm state. */
+		ht->match = false;
+		ht->hotdrop = true;
+		ht->next_state = NCLIMIT_MSM_DONE;
+	}
+
+out:	
 	return (ht->match);
 }
 
@@ -269,22 +347,17 @@ nclimit_msm_perip(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_nclimit_info_t *info = (xt_nclimit_info_t *)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
 
-	do {
-		if (0 == ht->rp.cost)
-			break;
-		
-		ht->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
-		ht->match = nclimit_check_perip_limit(ht, ht->now);
-		if (true != ht->match) {
-			ht->match = false;
-			ht->hotdrop = true;
-			ht->next_state = NCLIMIT_MSM_DONE;
-			/* print log */
-			nclimit_print_log(ht);
-			break;
-		}
-	} while (0);
+	if (0 == ht->rp.credit_cap)
+		goto out;
 
+	//ht->ip = (union nf_inet_addr)ip_hdr(skb)->saddr;
+	ht->hash = connlimit_ip_hash(ht->ip, ht->family);
+
+	spin_lock_bh(&ht->iphash[ht->hash].lock);
+	nclimit_check_perip_limit(ht, par);	
+	spin_unlock_bh(&ht->iphash[ht->hash].lock);
+
+out:	
 	return (ht->match);
 }
 
@@ -313,24 +386,20 @@ static bool nclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	xt_nclimit_info_t *info = (xt_nclimit_info_t*)par->matchinfo;
 	xt_nclimit_htable_t *ht = info->hinfo;
 
-
 	spin_lock_bh(&ht->lock);
-	ht->now = jiffies;
+
 	while (ht->state != NCLIMIT_MSM_DONE) {
 		ht->next_state = nclimit_state_table[ht->state].next_state;
-		
+
 		match = nclimit_state_table[ht->state].action(skb, par);
 
 		if (true == match) {
-
 			/* some functions change the next state, see the state table */
 			ht->state = ht->next_state;
 		} else if (false == match) {
-
 			/* no match result, force state chane to done */
 			ht->state = NCLIMIT_MSM_DONE;
 		} else {
-
 			/* bad result, force state change to done */
 			match = true;
 			ht->state = NCLIMIT_MSM_DONE;
@@ -339,6 +408,7 @@ static bool nclimit_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	
 	ht->state = NCLIMIT_MSM_INIT;
 	par->hotdrop = ht->hotdrop;
+
 	spin_unlock_bh(&ht->lock);
 
 	return match;
@@ -396,14 +466,16 @@ static void nclimit_htable_cleanup(xt_nclimit_htable_t *ht,
 	ip_nclimit_t *iplimit;
 	struct hlist_node *pos, *n;
 
-	spin_lock_bh(&nclimit_lock);
+//	spin_lock_bh(&ht->lock);
 	for (i = 0; i < SIP_HASH_SIZE; i++) {
-		hlist_for_each_entry_safe(iplimit, pos, n, &ht->head[i], hnode) {
+		spin_lock_bh(&ht->iphash[i].lock);
+		hlist_for_each_entry_safe(iplimit, pos, n, &ht->iphash[i].hhead, hnode) {
 			if ((*nclimit_select_gc)(ht, iplimit))
 				nclimit_free(ht, iplimit);
 		}
+		spin_unlock_bh(&ht->iphash[i].lock);
 	}
-	spin_unlock_bh(&nclimit_lock);
+//	spin_unlock_bh(&ht->lock);
 	return ;
 }
 
@@ -419,7 +491,7 @@ static void nclimit_htable_gc(unsigned long htlong)
 }
 
 static int nclimit_htable_create(struct net *net, xt_nclimit_info_t *info, 
-		u_int8_t family)
+				 connlimit_cfg_t *cfg, u_int8_t family)
 {
 	struct nclimit_net *nclimit_net = nclimit_pernet(net);
 	xt_nclimit_htable_t *hinfo = NULL;
@@ -430,17 +502,17 @@ static int nclimit_htable_create(struct net *net, xt_nclimit_info_t *info,
 		return -ENOMEM;
 	info->hinfo = hinfo;
 
-	for (i = 0; i < SIP_HASH_SIZE; i++)
-		INIT_HLIST_HEAD(&hinfo->head[i]);
+	for (i = 0; i < SIP_HASH_SIZE; i++) {
+		INIT_HLIST_HEAD(&hinfo->iphash[i].hhead);
+		spin_lock_init(&hinfo->iphash[i].lock);
+	}
 
 	spin_lock_init(&hinfo->lock);
 	strlcpy(hinfo->name, info->pf_name, sizeof(hinfo->name));
-	memcpy(&hinfo->rp, &info->rp, sizeof(hinfo->rp));
-	memcpy(&hinfo->rs, &info->rs, sizeof(hinfo->rs));
-	hinfo->log = info->log;
 	hinfo->use = 1;
 	hinfo->net = net;
 	hinfo->family = family;
+	nclimit_update_rateinfo(hinfo, cfg);
 	hinfo->pde = proc_create_data(hinfo->name, 0, 
 			(family == NFPROTO_IPV4) ?
 			nclimit_net->ipt_nclimit : nclimit_net->ip6t_nclimit,
@@ -483,18 +555,22 @@ static int nclimit_mt_check(const struct xt_mtchk_param *par)
 		rcu_read_unlock();
 		return -ENOMEM;
 	}
-	
-	memcpy(&info->rs, &cfg->rs, sizeof(info->rs));
-	memcpy(&info->rp, &cfg->rp, sizeof(info->rp));
-	info->log = cfg->log;
-	rcu_read_unlock();
 
+	rcu_read_unlock();
+	mutex_lock(&nclimit_mutex);
 	info->hinfo = nclimit_htable_find_get(net, info->pf_name, par->family);
 	if (NULL == info->hinfo) {
-		ret = nclimit_htable_create(net, info, par->family);
+		ret = nclimit_htable_create(net, info,cfg, par->family);
+		if (ret != 0) {
+			mutex_unlock(&nclimit_mutex);
+			rcu_read_lock();
+			return ret;
+		}
 	}
+	mutex_unlock(&nclimit_mutex);
+	rcu_read_lock();
 
-	return ret;
+	return 0;
 }
 
 static void htable_remove_proc_entry(xt_nclimit_htable_t *hinfo)
@@ -535,9 +611,11 @@ static void nclimit_mt_destroy(const struct xt_mtdtor_param *par)
 {
 	xt_nclimit_info_t *info = par->matchinfo;
 
+	mutex_lock(&nclimit_mutex);
 	connlimit_release_obj(info->obj_addr);
 	nclimit_htable_put(info->hinfo);
-	nf_ct_l3proto_module_put(par->family);
+	mutex_unlock(&nclimit_mutex);
+//	nf_ct_l3proto_module_put(par->family);
 
 	return ;
 }
@@ -560,7 +638,7 @@ static void *nclimit_seq_start(struct seq_file *s, loff_t *pos)
 	xt_nclimit_htable_t *ht = (xt_nclimit_htable_t *)s->private;
 	unsigned int *bucket;
 
-	spin_lock_bh(&nclimit_lock);
+	spin_lock_bh(&ht->lock);
 
 	if (*pos >= SIP_HASH_SIZE)
 		return NULL;
@@ -596,11 +674,12 @@ static void *nclimit_seq_next(struct seq_file *s, void *v, loff_t *pos)
 
 static void nclimit_seq_stop(struct seq_file *s, void *v)
 {
+	xt_nclimit_htable_t *ht = (xt_nclimit_htable_t *)s->private;
 	unsigned int *bucket = (unsigned int *)v;
 
 	if (!IS_ERR(bucket))
 		kfree(bucket);
-	spin_unlock_bh(&nclimit_lock);
+	spin_unlock_bh(&ht->lock);
 }
 
 static int nclimit_seq_show(struct seq_file *s, void *v)
@@ -610,8 +689,8 @@ static int nclimit_seq_show(struct seq_file *s, void *v)
 	struct hlist_node *pos = NULL;
 	ip_nclimit_t *iplimit = NULL;
 
-	if (!hlist_empty(&ht->head[*bucket])) {
-		hlist_for_each_entry(iplimit, pos, &ht->head[*bucket], hnode) {
+	if (!hlist_empty(&ht->iphash[*bucket].hhead)) {
+		hlist_for_each_entry(iplimit, pos, &ht->iphash[*bucket].hhead, hnode) {
 			seq_printf(s, "ip_node = %-16pI4 hash = %u\n", 
 				&(iplimit->ip),
 				(unsigned int)*bucket);
@@ -688,7 +767,11 @@ static struct pernet_operations nclimit_net_ops = {
 };
 
 /* PROC stuff end */
+#ifdef USE_MODULE
 static int __init xt_nclimit_init( void )
+#else
+int xt_nclimit_init( void )
+#endif
 {
 	int ret = 0;
 
@@ -708,12 +791,21 @@ unreg_subsys:
 	return ret;
 }
 
+#ifdef USE_MODULE
 static void __exit xt_nclimit_fint( void )
+#else
+void  xt_nclimit_fint( void )
+#endif
 {
 	xt_unregister_matches(nclimit_mt_reg, ARRAY_SIZE(nclimit_mt_reg));	
 	unregister_pernet_subsys(&nclimit_net_ops);
 	return ;
 }
 
+#ifdef USE_MODULE
 module_init(xt_nclimit_init);
 module_exit(xt_nclimit_fint);
+#else
+EXPORT_SYMBOL(xt_nclimit_init);
+EXPORT_SYMBOL(xt_nclimit_fint);
+#endif
