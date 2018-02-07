@@ -140,15 +140,6 @@ static int netobj_set_ctl(struct sock *sk, int cmd, void __user *user, unsigned 
 	}
 
 	mutex_unlock( &class_lock );
-	if (cmd == ADDR_GROUP_OBJ_MODIFY 
-			|| cmd == SERVICE_OBJ_MODIFY
-			|| cmd == SERV_GROUP_OBJ_MODIFY
-			|| cmd == SECZONE_OBJ_SZ_SET
-			|| cmd == TIMEOBJ_OBJ_SET
-			|| cmd == TIMEGRP_OBJ_SET ) {
-		if (GET_STATE_FLAG(ENABLE_RULE_FIRST))
-			GLOBAL_TIME_STAMP_INC();
-	}
 
 	return ret;
 }
